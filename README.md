@@ -4,7 +4,7 @@
 
 # svg3dx-viewer
 
-svg3dx **查看器组件**（Viewer）：可嵌入网页，渲染三维配方，并提供可编辑的外部参数列表。
+svg3dx **查看器组件**（Viewer）：可嵌入网页，渲染三维配方，并提供可编辑的外部参数列表。定位为轻量显示；点击选中 / 高亮等编辑向交互由宿主（如 studio 的 `interact`）自行叠加。
 
 ## 关联库
 
@@ -37,10 +37,16 @@ const viewer = await createViewer(document.getElementById("view")!, {
   paramsEl: document.getElementById("params")!,
 });
 await viewer.loadSvg(svgText);
-viewer.setParams({ R: 40, D: 180 });
+viewer.setParams({ H: 120 }); // only direct :root literals are accepted
 ```
 
-API：`createViewer` / `loadSvg` / `setParams` / `getParams` / `ParamPanel`。
+API：`createViewer` / `loadSvg` / `setParams` / `getParams` / `setModel` / `ParamPanel`。
+
+视口控件均可开关（默认开启）：
+
+- `modelBar` — 左上角 Model 下拉
+- `paramsBar` — Model 下方可折叠 Params（改参立刻重评）
+- `viewHelper` — 右上角方位控件
 
 ## 许可证
 

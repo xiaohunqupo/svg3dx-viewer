@@ -33,16 +33,33 @@ function kindOf(v: string | number | boolean): ParamDesc["kind"] {
   return "string";
 }
 
-/** Parse CSS custom properties from a `<style>` block as default param seeds. */
+function isDirectParamValue(raw: string): boolean {
+  const s = raw.trim();
+  if (!s) return false;
+  const lower = s.toLowerCase();
+  return !lower.includes("var(") && !lower.includes("calc(");
+}
+
+/**
+ * Seed external params from `:root` direct literals only
+ * (matches svg3dx external-param whitelist).
+ */
 export function extractStyleParams(svgText: string): ParamMap {
   const out: ParamMap = {};
-  const re = /--([A-Za-z_][\w-]*)\s*:\s*([^;}+]+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(svgText))) {
-    const name = m[1];
-    const raw = m[2].trim();
-    if (name in out) continue; // first wins (document order); later classes may override in DOM — good enough for seed
-    out[name] = parseLiteral(raw);
+  const rootBlock =
+    /:root\s*\{([^}]*)\}/gi;
+  let block: RegExpExecArray | null;
+  while ((block = rootBlock.exec(svgText))) {
+    const body = block[1] ?? "";
+    const re = /--([A-Za-z_][\w-]*)\s*:\s*([^;]+)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(body))) {
+      const name = m[1];
+      const raw = m[2].trim();
+      if (!isDirectParamValue(raw)) continue;
+      if (name in out) continue;
+      out[name] = parseLiteral(raw);
+    }
   }
   return out;
 }

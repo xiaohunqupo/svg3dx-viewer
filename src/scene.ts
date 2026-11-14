@@ -1,7 +1,9 @@
 import * as THREE from "three";
 import { buildThreeObject } from "./primitive.js";
 import { resolveActiveModel } from "./model.js";
-import type { EvaluationResult } from "./types.js";
+import { mat4x3ToMatrix4 } from "./transform.js";
+import { remapAsModelUse } from "./pick.js";
+import type { EvaluationResult, GeometryInstruction } from "./types.js";
 
 /** Low-level scene binder: EvaluationResult → THREE objects. */
 export class Svg3dxViewer {
@@ -23,6 +25,11 @@ export class Svg3dxViewer {
     }
   }
 
+  /**
+   * Bind evaluated geometry into the scene.
+   * When a model is active, only its `<s3dx:use>` references are shown
+   * (each with that use's `s3dx:transform`) — not every defs group.
+   */
   fromResult(result: EvaluationResult, modeOverride?: string): void {
     this.clear();
     for (const w of result.warnings) {
@@ -30,8 +37,42 @@ export class Svg3dxViewer {
     }
     const model = resolveActiveModel(result);
     const mode = modeOverride ?? model?.mode ?? "solid";
+
+    const groupsById = new Map<string, GeometryInstruction>();
     for (const inst of result.instructions) {
-      const obj = buildThreeObject(inst, mode);
+      if (inst.type === "group" && inst.id) {
+        groupsById.set(inst.id, inst);
+      }
+    }
+
+    if (model && model.uses.length > 0) {
+      for (let i = 0; i < model.uses.length; i++) {
+        const use = model.uses[i]!;
+        const src = groupsById.get(use.group_id);
+        if (!src) {
+          console.warn(
+            `[svg3dx-viewer] model '${model.id}' references missing group '${use.group_id}'`
+          );
+          continue;
+        }
+        const defsPath = `defs:${use.group_id}`;
+        const obj = buildThreeObject(src, mode, defsPath);
+        if (!obj) continue;
+        const usePath = `model:${model.id}.${i}`;
+        obj.name = `use:${use.group_id}`;
+        remapAsModelUse(obj, usePath, use.group_id);
+        if (use.transform?.m?.length) {
+          obj.applyMatrix4(mat4x3ToMatrix4(use.transform.m));
+        }
+        this.root.add(obj);
+      }
+      return;
+    }
+
+    for (const inst of result.instructions) {
+      const path =
+        inst.type === "group" && inst.id ? `defs:${inst.id}` : undefined;
+      const obj = buildThreeObject(inst, mode, path);
       if (obj) this.root.add(obj);
     }
   }
@@ -63,9 +104,10 @@ function disposeObject(obj: THREE.Object3D): void {
   obj.traverse((c) => {
     const m = c as THREE.Mesh;
     if (m.geometry) m.geometry.dispose();
-    if (m.material) {
-      const mats = Array.isArray(m.material) ? m.material : [m.material];
-      for (const mat of mats) mat.dispose();
+    const mat = (m as THREE.Mesh).material;
+    if (mat) {
+      const mats = Array.isArray(mat) ? mat : [mat];
+      for (const item of mats) item.dispose();
     }
   });
 }

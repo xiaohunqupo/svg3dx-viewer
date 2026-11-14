@@ -15,8 +15,37 @@ type WasmPkg = {
 let pkg: WasmPkg | null = null;
 let initPromise: Promise<void> | null = null;
 
+/**
+ * serde-wasm-bindgen emits JS `Map` for Rust IndexMap/HashMap.
+ * `JSON.stringify(Map)` becomes `{}`, which wiped geometry params (boxes → size 1).
+ * Convert Maps (and nested structures) into plain objects first.
+ */
+function reviveMaps(value: unknown): unknown {
+  if (value instanceof Map) {
+    const obj: Record<string, unknown> = {};
+    for (const [k, v] of value.entries()) {
+      obj[String(k)] = reviveMaps(v);
+    }
+    return obj;
+  }
+  if (Array.isArray(value)) {
+    return value.map(reviveMaps);
+  }
+  if (value && typeof value === "object") {
+    const proto = Object.getPrototypeOf(value);
+    if (proto === Object.prototype || proto === null) {
+      const obj: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        obj[k] = reviveMaps(v);
+      }
+      return obj;
+    }
+  }
+  return value;
+}
+
 function normalizeResult(raw: unknown): EvaluationResult {
-  return JSON.parse(JSON.stringify(raw)) as EvaluationResult;
+  return reviveMaps(raw) as EvaluationResult;
 }
 
 async function defaultPkgImport(): Promise<WasmPkg> {
