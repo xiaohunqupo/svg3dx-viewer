@@ -1,0 +1,93 @@
+# Build pipeline: checkout svg3dx-core → wasm-pack → tsc → embed example
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: viewer-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  SVG3DX_CORE_ROOT: ${{ github.workspace }}/svg3dx-core
+  SVG3DX_ROOT: ${{ github.workspace }}/svg3dx
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: svg3dx-viewer
+
+    steps:
+      - name: Checkout svg3dx-viewer
+        uses: actions/checkout@v4
+        with:
+          path: svg3dx-viewer
+
+      - name: Checkout svg3dx-core (WASM)
+        uses: actions/checkout@v4
+        with:
+          repository: xiaohunqupo/svg3dx-core
+          path: svg3dx-core
+
+      - name: Checkout svg3dx (samples for embed)
+        uses: actions/checkout@v4
+        with:
+          repository: xiaohunqupo/svg3dx
+          path: svg3dx
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: svg3dx-viewer/package-lock.json
+
+      - name: Setup Rust (wasm32)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            svg3dx-core/target/
+          key: ${{ runner.os }}-cargo-viewer-${{ hashFiles('svg3dx-core/Cargo.toml', 'svg3dx-core/crates/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-viewer-
+
+      - name: Install wasm-pack
+        run: |
+          if ! command -v wasm-pack >/dev/null 2>&1; then
+            cargo install wasm-pack --locked
+          fi
+        working-directory: ${{ github.workspace }}
+
+      - name: npm ci
+        run: npm ci
+
+      - name: Build (wasm-pack + tsc)
+        run: npm run build
+
+      - name: Build embed example
+        run: npm run build:embed
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: svg3dx-viewer-dist
+          path: |
+            svg3dx-viewer/dist
+            svg3dx-viewer/examples/embed-dist
+          if-no-files-found: error

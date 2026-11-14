@@ -30,6 +30,15 @@ npm install
 npm run dev                   # examples/embed
 ```
 
+## CI
+
+GitHub Actions（`.github/workflows/ci.yml`）在 `main` / PR 上：
+
+1. 检出并列仓 `svg3dx-core`、`svg3dx`
+2. `wasm-pack` → core `pkg/`
+3. `tsc` 库构建 + Vite embed 示例
+4. 上传 `dist` / `examples/embed-dist` 产物
+
 ## 嵌入用法
 
 ```ts

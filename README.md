@@ -30,6 +30,15 @@ npm install
 npm run dev                   # examples/embed
 ```
 
+## CI
+
+GitHub Actions (`.github/workflows/ci.yml`) on `main` / PR:
+
+1. Checkout sibling `svg3dx-core` + `svg3dx`
+2. `wasm-pack` → core `pkg/`
+3. `tsc` library build + Vite embed example
+4. Upload `dist` / `examples/embed-dist` artifacts
+
 ## Embedding
 
 ```ts
