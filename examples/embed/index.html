@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>svg3dx-viewer embed example</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; font-family: "Segoe UI", system-ui, sans-serif; background: #eef2f6; color: #1a2430; }
+      #app { display: grid; grid-template-columns: 1fr 260px; grid-template-rows: auto 1fr; height: 100%; gap: 0; }
+      header { grid-column: 1 / -1; padding: 0.75rem 1rem; background: #fff; border-bottom: 1px solid #d0d8e2; display: flex; gap: 0.75rem; align-items: center; }
+      h1 { margin: 0; font-size: 1rem; }
+      #viewport { min-height: 0; }
+      #params { background: #fff; border-left: 1px solid #d0d8e2; padding: 0.75rem; overflow: auto; }
+      #params h2 { margin: 0 0 0.75rem; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
+      #status { font-size: 0.85rem; opacity: 0.7; margin-left: auto; }
+      button { font: inherit; padding: 0.35rem 0.7rem; border-radius: 6px; border: 1px solid #2f6fed; background: #2f6fed; color: #fff; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>svg3dx-viewer · embed</h1>
+        <button id="reload" type="button">Reload sample</button>
+        <span id="status">…</span>
+      </header>
+      <div id="viewport"></div>
+      <aside id="params"><h2>Params</h2></aside>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
