@@ -1,13 +1,19 @@
+<p align="center">
+  <img src="assets/title.png" alt="svg 3dx viewer" width="360"/>
+</p>
+
 # svg3dx-viewer
 
 svg3dx **查看器组件**（Viewer）：可嵌入网页，渲染三维配方，并提供可编辑的外部参数列表。
 
-| 相关仓库 | 职责 |
-|----------|------|
-| [svg3dx](../svg3dx) | 格式规范与 samples |
-| [svg3dx-core](../svg3dx-core) | 解析求值引擎（WASM） |
+## 关联库
+
+| 仓库 | 职责 |
+|------|------|
+| [svg3dx](https://github.com/xiaohunqupo/svg3dx) | 格式规范与 samples |
+| [svg3dx-core](https://github.com/xiaohunqupo/svg3dx-core) | 解析求值引擎（WASM） |
 | **svg3dx-viewer**（本仓） | 嵌入式查看器组件 |
-| [svg3dx-studio](../svg3dx-studio) | svg3dx 编辑器 |
+| [svg3dx-studio](https://github.com/xiaohunqupo/svg3dx-studio) | svg3dx 编辑器 |
 
 ## 安装 / 开发
 
