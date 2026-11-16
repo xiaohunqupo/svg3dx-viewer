@@ -36,7 +36,7 @@ export function buildSvg2dObjects(
   const group = new THREE.Group();
   group.name = "svg2d";
   const ctx: StyleCtx = {
-    fill: "#1f2937",
+    fill: "#2563eb",
     stroke: "none",
     strokeWidth: 1,
     fontSize: 16,
@@ -201,7 +201,7 @@ function makeText(el: Element, ctx: StyleCtx, font: Font): THREE.Object3D | null
     geometry.translate(dx, 0, 0);
   }
 
-  const mat = fillMaterial({ ...ctx, fill: ctx.fill === "none" ? "#1f2937" : ctx.fill });
+  const mat = fillMaterial({ ...ctx, fill: ctx.fill === "none" ? "#2563eb" : ctx.fill });
   if (!mat) return null;
   const mesh = new THREE.Mesh(geometry, mat);
   mesh.position.set(x, y, 0.05);
