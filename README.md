@@ -17,7 +17,15 @@ Embeddable **viewer component** for svg3dx: render parametric 3D recipes in a pa
 | **svg3dx-viewer** (this repo) | Embeddable viewer component |
 | [svg3dx-studio](https://github.com/xiaohunqupo/svg3dx-studio) | svg3dx editor |
 
-## Install / develop
+## Install
+
+```bash
+npm install svg3dx-viewer three
+```
+
+Peer: `three >= 0.160.0`. Runtime WASM comes from dependency `svg3dx-ffi-wasm`. Bundlers need WASM support (e.g. Vite + `vite-plugin-wasm`).
+
+## Develop
 
 Sibling checkouts of `svg3dx-core`, `svg3dx` (samples), and this repo:
 

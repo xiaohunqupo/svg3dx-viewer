@@ -17,7 +17,15 @@ svg3dx **查看器组件**（Viewer）：可嵌入网页，渲染三维配方，
 | **svg3dx-viewer**（本仓） | 嵌入式查看器组件 |
 | [svg3dx-studio](https://github.com/xiaohunqupo/svg3dx-studio) | svg3dx 编辑器 |
 
-## 安装 / 开发
+## 安装
+
+```bash
+npm install svg3dx-viewer three
+```
+
+peer：`three >= 0.160.0`。运行时 WASM 来自依赖 `svg3dx-ffi-wasm`。打包器需支持 WASM（如 Vite + `vite-plugin-wasm`）。
+
+## 开发
 
 本机需并列：`svg3dx-core`、`svg3dx`（示例）、本仓。
 
