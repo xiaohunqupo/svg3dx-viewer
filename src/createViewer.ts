@@ -131,6 +131,7 @@ export class EmbedViewer {
     this.viewHelper = new ViewHelper(this.camera, this.renderer.domElement);
     this.viewHelper.center = this.controls.target;
     this.viewHelper.setLabels("X", "Y", "Z");
+    this.viewHelper.adaptToBackground(this.scene.background as THREE.Color);
 
     if (this.viewHelperVisible && options.viewHelperClick !== false) {
       this.onPointerDown = (event: PointerEvent) => {
@@ -225,9 +226,12 @@ export class EmbedViewer {
     this.resize();
     const tick = () => {
       const delta = this.clock.getDelta();
-      this.controls.update();
+      // Skip OrbitControls while ViewHelper owns the camera, otherwise lookAt
+      // fights the axis-home animation every frame.
       if (this.viewHelperVisible && this.viewHelper.animating) {
         this.viewHelper.update(delta);
+      } else {
+        this.controls.update();
       }
       this.renderer.clear();
       this.renderer.render(this.scene, this.camera);
@@ -314,7 +318,9 @@ export class EmbedViewer {
 
   /** Update Three.js scene clear / backdrop color (hex number or CSS color string). */
   setBackground(color: number | string): void {
-    this.scene.background = new THREE.Color(color);
+    const bg = new THREE.Color(color);
+    this.scene.background = bg;
+    this.viewHelper.adaptToBackground(bg);
   }
 
   getResult(): EvaluationResult | null {

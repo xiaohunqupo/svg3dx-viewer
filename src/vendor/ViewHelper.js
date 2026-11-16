@@ -2,6 +2,7 @@ import {
 	CylinderGeometry,
 	CanvasTexture,
 	Color,
+	Matrix4,
 	Mesh,
 	MeshBasicMaterial,
 	Object3D,
@@ -63,14 +64,13 @@ class ViewHelper extends Object3D {
 		const spriteMaterial1 = getSpriteMaterial( color1 );
 		const spriteMaterial2 = getSpriteMaterial( color2 );
 		const spriteMaterial3 = getSpriteMaterial( color3 );
-		const spriteMaterial4 = getSpriteMaterial( color4 );
 
 		const posXAxisHelper = new Sprite( spriteMaterial1 );
 		const posYAxisHelper = new Sprite( spriteMaterial2 );
 		const posZAxisHelper = new Sprite( spriteMaterial3 );
-		const negXAxisHelper = new Sprite( spriteMaterial4 );
-		const negYAxisHelper = new Sprite( spriteMaterial4 );
-		const negZAxisHelper = new Sprite( spriteMaterial4 );
+		const negXAxisHelper = new Sprite();
+		const negYAxisHelper = new Sprite();
+		const negZAxisHelper = new Sprite();
 
 		posXAxisHelper.position.x = 1;
 		posYAxisHelper.position.y = 1;
@@ -79,9 +79,8 @@ class ViewHelper extends Object3D {
 		negYAxisHelper.position.y = - 1;
 		negZAxisHelper.position.z = - 1;
 
-		negXAxisHelper.material.opacity = 0.2;
-		negYAxisHelper.material.opacity = 0.2;
-		negZAxisHelper.material.opacity = 0.2;
+		// Stock three.js uses black @ 0.2 — invisible on dark scene backgrounds.
+		applyNegativeAxisMaterial( color4, 0.2 );
 
 		posXAxisHelper.userData.type = 'posX';
 		posYAxisHelper.userData.type = 'posY';
@@ -107,6 +106,10 @@ class ViewHelper extends Object3D {
 		const point = new Vector3();
 		const dim = 128;
 		const turnRate = 2 * Math.PI; // turn rate in angles per second
+		// angleTo() of near-equal / non-unit quats often returns ~1e-8, never === 0.
+		const angleEps = 1e-5;
+		let animElapsed = 0;
+		const animMaxSeconds = 2;
 
 		this.render = function ( renderer ) {
 
@@ -143,13 +146,12 @@ class ViewHelper extends Object3D {
 
 		this.handleClick = function ( event ) {
 
-			if ( this.animating === true ) return false;
-
 			const rect = domElement.getBoundingClientRect();
+			// Must match render(): top-right CSS panel (stock three.js uses bottom-right).
 			const offsetX = rect.left + ( domElement.offsetWidth - dim );
-			const offsetY = rect.top + ( domElement.offsetHeight - dim );
-			mouse.x = ( ( event.clientX - offsetX ) / ( rect.right - offsetX ) ) * 2 - 1;
-			mouse.y = - ( ( event.clientY - offsetY ) / ( rect.bottom - offsetY ) ) * 2 + 1;
+			const offsetY = rect.top;
+			mouse.x = ( ( event.clientX - offsetX ) / dim ) * 2 - 1;
+			mouse.y = - ( ( event.clientY - offsetY ) / dim ) * 2 + 1;
 
 			raycaster.setFromCamera( mouse, orthoCamera );
 
@@ -160,8 +162,10 @@ class ViewHelper extends Object3D {
 				const intersection = intersects[ 0 ];
 				const object = intersection.object;
 
+				// Allow interrupting an in-flight home so rapid clicks cannot wedge
+				// the viewer with animating===true forever.
 				prepareAnimationData( object, this.center );
-
+				animElapsed = 0;
 				this.animating = true;
 
 				return true;
@@ -194,9 +198,32 @@ class ViewHelper extends Object3D {
 
 		};
 
+		/**
+		 * Pick −X/−Y/−Z disc color from scene background luminance so the
+		 * gizmo stays readable in both light and dark themes.
+		 */
+		this.adaptToBackground = function ( background ) {
+
+			const bg = background.isColor ? background : new Color( background );
+			// Relative luminance (sRGB linearized channels already in Color).
+			const lum = 0.2126 * bg.r + 0.7152 * bg.g + 0.0722 * bg.b;
+			if ( lum < 0.45 ) {
+
+				applyNegativeAxisMaterial( new Color( '#ffffff' ), 0.35 );
+
+			} else {
+
+				applyNegativeAxisMaterial( new Color( '#000000' ), 0.2 );
+
+			}
+
+		};
+
 		this.update = function ( delta ) {
 
-			const step = delta * turnRate;
+			const dt = Math.max( delta, 0 );
+			animElapsed += dt;
+			const step = dt * turnRate;
 
 			// animate position by doing a slerp and then scaling the position on the unit sphere
 			// (0,0,1) is dummy local +Z = opposite lookAt forward; valid for any up.
@@ -209,8 +236,13 @@ class ViewHelper extends Object3D {
 			camera.quaternion.rotateTowards( targetQuaternion, step );
 			camera.up.copy( worldUp );
 
-			if ( q1.angleTo( q2 ) === 0 ) {
+			if ( q1.angleTo( q2 ) <= angleEps || animElapsed >= animMaxSeconds ) {
 
+				q1.copy( q2 );
+				camera.position.set( 0, 0, 1 ).applyQuaternion( q2 ).multiplyScalar( radius ).add( this.center );
+				camera.quaternion.copy( targetQuaternion );
+				camera.up.copy( worldUp );
+				animElapsed = 0;
 				this.animating = false;
 
 			}
@@ -229,15 +261,11 @@ class ViewHelper extends Object3D {
 			posYAxisHelper.material.map.dispose();
 			posZAxisHelper.material.map.dispose();
 			negXAxisHelper.material.map.dispose();
-			negYAxisHelper.material.map.dispose();
-			negZAxisHelper.material.map.dispose();
 
 			posXAxisHelper.material.dispose();
 			posYAxisHelper.material.dispose();
 			posZAxisHelper.material.dispose();
 			negXAxisHelper.material.dispose();
-			negYAxisHelper.material.dispose();
-			negZAxisHelper.material.dispose();
 
 		};
 
@@ -256,13 +284,14 @@ class ViewHelper extends Object3D {
 
 		}
 
+		const _lookMatrix = new Matrix4();
+
 		function cameraQuatLookingAt( eyePos, focusPoint ) {
 
+			// Camera looks down -Z; Object3D.lookAt points +Z, so use Matrix4.lookAt.
 			lookDir.subVectors( focusPoint, eyePos ).normalize();
-			dummy.position.copy( eyePos );
-			dummy.up.copy( upForViewDir( lookDir ) );
-			dummy.lookAt( focusPoint );
-			targetQuaternion.copy( dummy.quaternion );
+			_lookMatrix.lookAt( eyePos, focusPoint, upForViewDir( lookDir ) );
+			targetQuaternion.setFromRotationMatrix( _lookMatrix );
 
 		}
 
@@ -305,18 +334,39 @@ class ViewHelper extends Object3D {
 
 			dummy.position.copy( focusPoint );
 			orientDummyToward( camera.position );
-			q1.copy( dummy.quaternion );
+			q1.copy( dummy.quaternion ).normalize();
 
 			orientDummyToward( targetPosition );
-			q2.copy( dummy.quaternion );
+			q2.copy( dummy.quaternion ).normalize();
 
 			cameraQuatLookingAt( targetPosition, focusPoint );
+			targetQuaternion.normalize();
 
 		}
 
 		function getAxisMaterial( color ) {
 
 			return new MeshBasicMaterial( { color: color, toneMapped: false } );
+
+		}
+
+		function applyNegativeAxisMaterial( color, opacity ) {
+
+			const prev = negXAxisHelper.material;
+			if ( prev && prev !== posXAxisHelper.material ) {
+
+				prev.map && prev.map.dispose();
+				prev.dispose();
+
+			}
+
+			const mat = getSpriteMaterial( color );
+			mat.opacity = opacity;
+			mat.transparent = true;
+
+			negXAxisHelper.material = mat;
+			negYAxisHelper.material = mat;
+			negZAxisHelper.material = mat;
 
 		}
 
