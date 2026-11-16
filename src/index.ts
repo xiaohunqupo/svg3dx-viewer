@@ -1,4 +1,20 @@
-export type { EvaluationResult, GeometryInstruction, ModelDesc, Value } from "./types.js";
+export type {
+  EvaluationResult,
+  GeometryInstruction,
+  MaterialDesc,
+  ModelDesc,
+  Value,
+} from "./types.js";
+export {
+  BUILTIN_MATERIALS,
+  DEFAULT_FILL,
+  composeColor,
+  materialLibraryFromResult,
+  resolveAppearance,
+  resolveMaterialDesc,
+  toThreeMaterial,
+} from "./materials.js";
+export type { MaterialLibrary, ResolvedAppearance } from "./materials.js";
 export type { ParamMap } from "./wasm.js";
 export type { ParamDesc } from "./params.js";
 export type { CreateViewerOptions } from "./createViewer.js";
@@ -13,6 +29,13 @@ export { Svg3dxViewer } from "./scene.js";
 export { buildThreeObject } from "./primitive.js";
 export { resolveActiveModel } from "./model.js";
 export { createViewer, EmbedViewer } from "./createViewer.js";
+export { buildSvg2dObjects, getDefaultSvg2dFont } from "./svg2d.js";
+export {
+  WORLD_UP,
+  DEFAULT_VIEW_DIR,
+  DEFAULT_EYE_OFFSET,
+  applyWorldUp,
+} from "./coords.js";
 export {
   getPickData,
   matchesHighlight,

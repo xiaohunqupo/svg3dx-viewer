@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { ViewHelper } from "./vendor/ViewHelper.js";
+import { applyWorldUp, DEFAULT_EYE_OFFSET, WORLD_UP } from "./coords.js";
 import { Svg3dxViewer } from "./scene.js";
 import { ParamPanel } from "./ParamPanel.js";
 import { ModelBar } from "./ModelBar.js";
@@ -8,6 +10,9 @@ import { ParamsBar } from "./ParamsBar.js";
 import { extractStyleParams, listParams } from "./params.js";
 import { initWasm, parseSvg, type ParamMap } from "./wasm.js";
 import type { EvaluationResult } from "./types.js";
+
+// Before any Object3D / lookAt / controls: svg3dx Z-up.
+applyWorldUp();
 
 const PICK_DRAG_PX = 5;
 
@@ -111,8 +116,10 @@ export class EmbedViewer {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(options.background ?? 0xe8eef2);
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100000);
+    this.camera.up.copy(WORLD_UP);
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.canvasWrap.appendChild(this.renderer.domElement);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -150,10 +157,21 @@ export class EmbedViewer {
       this.renderer.domElement.addEventListener("pointerup", this.onPointerUp);
     }
 
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.55));
-    const key = new THREE.DirectionalLight(0xffffff, 0.9);
-    key.position.set(2, 3, 4);
+    // PBR (esp. metalness>0) needs an environment; without it metals look near-black
+    // and even white dielectrics read as dull gray under sparse lights.
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+
+    this.scene.add(new THREE.HemisphereLight(0xffffff, 0xb0b8c0, 0.65));
+    this.scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+    const key = new THREE.DirectionalLight(0xffffff, 1.15);
+    // Key light from the default eye side (same iso as fitCamera)
+    key.position.copy(DEFAULT_EYE_OFFSET).multiplyScalar(4);
     this.scene.add(key);
+    const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+    fill.position.set(-DEFAULT_EYE_OFFSET.x, -DEFAULT_EYE_OFFSET.y, DEFAULT_EYE_OFFSET.z).normalize().multiplyScalar(4);
+    this.scene.add(fill);
 
     this.viewer = new Svg3dxViewer(this.scene);
 
@@ -304,7 +322,7 @@ export class EmbedViewer {
     const result = await parseSvg(this.svgText, this.params, this.model);
     this.lastResult = result;
     if (result.warnings.length) this.onWarnings?.(result.warnings);
-    this.viewer.fromResult(result, this.mode);
+    this.viewer.fromResult(result, this.mode, this.svgText);
     if (options.fitCamera !== false) {
       this.viewer.fitCamera(this.camera, this.controls);
     }
@@ -361,6 +379,8 @@ export class EmbedViewer {
     this.modelBar?.dispose();
     this.leftChrome?.remove();
     this.paramPanel?.dispose();
+    this.scene.environment?.dispose();
+    this.scene.environment = null;
     this.renderer.dispose();
     this.canvasWrap.remove();
   }

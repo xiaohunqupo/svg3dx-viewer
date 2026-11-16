@@ -2,7 +2,6 @@ import {
 	CylinderGeometry,
 	CanvasTexture,
 	Color,
-	Euler,
 	Mesh,
 	MeshBasicMaterial,
 	Object3D,
@@ -39,6 +38,11 @@ class ViewHelper extends Object3D {
 		const raycaster = new Raycaster();
 		const mouse = new Vector2();
 		const dummy = new Object3D();
+		// svg3dx is Z-up; stock ViewHelper assumes Y-up lookAt / Euler homes.
+		const worldUp = new Vector3( 0, 0, 1 );
+		const altUp = new Vector3( 0, 1, 0 );
+		const lookDir = new Vector3();
+		dummy.up.copy( worldUp );
 
 		const orthoCamera = new OrthographicCamera( - 2, 2, 2, - 2, 0, 4 );
 		orthoCamera.position.set( 0, 0, 2 );
@@ -195,6 +199,7 @@ class ViewHelper extends Object3D {
 			const step = delta * turnRate;
 
 			// animate position by doing a slerp and then scaling the position on the unit sphere
+			// (0,0,1) is dummy local +Z = opposite lookAt forward; valid for any up.
 
 			q1.rotateTowards( q2, step );
 			camera.position.set( 0, 0, 1 ).applyQuaternion( q1 ).multiplyScalar( radius ).add( this.center );
@@ -202,6 +207,7 @@ class ViewHelper extends Object3D {
 			// animate orientation
 
 			camera.quaternion.rotateTowards( targetQuaternion, step );
+			camera.up.copy( worldUp );
 
 			if ( q1.angleTo( q2 ) === 0 ) {
 
@@ -235,57 +241,76 @@ class ViewHelper extends Object3D {
 
 		};
 
+		function upForViewDir( dir ) {
+
+			// lookAt is singular when view ∥ world up; use +Y as north then.
+			return Math.abs( dir.dot( worldUp ) ) > 0.99 ? altUp : worldUp;
+
+		}
+
+		function orientDummyToward( point ) {
+
+			lookDir.subVectors( point, dummy.position ).normalize();
+			dummy.up.copy( upForViewDir( lookDir ) );
+			dummy.lookAt( point );
+
+		}
+
+		function cameraQuatLookingAt( eyePos, focusPoint ) {
+
+			lookDir.subVectors( focusPoint, eyePos ).normalize();
+			dummy.position.copy( eyePos );
+			dummy.up.copy( upForViewDir( lookDir ) );
+			dummy.lookAt( focusPoint );
+			targetQuaternion.copy( dummy.quaternion );
+
+		}
+
 		function prepareAnimationData( object, focusPoint ) {
 
 			switch ( object.userData.type ) {
 
 				case 'posX':
 					targetPosition.set( 1, 0, 0 );
-					targetQuaternion.setFromEuler( new Euler( 0, Math.PI * 0.5, 0 ) );
 					break;
 
 				case 'posY':
 					targetPosition.set( 0, 1, 0 );
-					targetQuaternion.setFromEuler( new Euler( - Math.PI * 0.5, 0, 0 ) );
 					break;
 
 				case 'posZ':
 					targetPosition.set( 0, 0, 1 );
-					targetQuaternion.setFromEuler( new Euler() );
 					break;
 
 				case 'negX':
 					targetPosition.set( - 1, 0, 0 );
-					targetQuaternion.setFromEuler( new Euler( 0, - Math.PI * 0.5, 0 ) );
 					break;
 
 				case 'negY':
 					targetPosition.set( 0, - 1, 0 );
-					targetQuaternion.setFromEuler( new Euler( Math.PI * 0.5, 0, 0 ) );
 					break;
 
 				case 'negZ':
 					targetPosition.set( 0, 0, - 1 );
-					targetQuaternion.setFromEuler( new Euler( 0, Math.PI, 0 ) );
 					break;
 
 				default:
 					console.error( 'ViewHelper: Invalid axis.' );
+					return;
 
 			}
-
-			//
 
 			radius = camera.position.distanceTo( focusPoint );
 			targetPosition.multiplyScalar( radius ).add( focusPoint );
 
 			dummy.position.copy( focusPoint );
-
-			dummy.lookAt( camera.position );
+			orientDummyToward( camera.position );
 			q1.copy( dummy.quaternion );
 
-			dummy.lookAt( targetPosition );
+			orientDummyToward( targetPosition );
 			q2.copy( dummy.quaternion );
+
+			cameraQuatLookingAt( targetPosition, focusPoint );
 
 		}
 

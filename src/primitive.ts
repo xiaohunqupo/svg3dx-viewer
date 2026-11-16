@@ -17,6 +17,12 @@ import {
   buildPyramidGeometry,
   buildRevolveGeometry,
 } from "./solids.js";
+import {
+  type MaterialLibrary,
+  resolveAppearance,
+  toThreeLineMaterial,
+  toThreeMaterial,
+} from "./materials.js";
 
 function num(v: Value | undefined, fallback = 0): number {
   return typeof v === "number" ? v : fallback;
@@ -76,6 +82,36 @@ function alignAxisY(
   geometry.applyMatrix4(m);
 }
 
+/**
+ * Align Z-up sector geometry (θ=0 along local +X) so local +Z runs `from`→`to`.
+ * Azimuth zero follows world +X projected into the plane ⊥ axis (OCC Ax2 style);
+ * if axis ∥ +X, fall back to +Y.
+ */
+function alignAxisZ(
+  geometry: THREE.BufferGeometry,
+  from: THREE.Vector3,
+  to: THREE.Vector3
+): void {
+  const zAxis = new THREE.Vector3().subVectors(to, from);
+  if (zAxis.lengthSq() < 1e-20) zAxis.set(0, 0, 1);
+  else zAxis.normalize();
+
+  let xAxis = new THREE.Vector3(1, 0, 0);
+  xAxis.addScaledVector(zAxis, -xAxis.dot(zAxis));
+  if (xAxis.lengthSq() < 1e-12) {
+    xAxis.set(0, 1, 0);
+    xAxis.addScaledVector(zAxis, -xAxis.dot(zAxis));
+  }
+  xAxis.normalize();
+  // Local Z-up RH: +Z→axis, +X→xRef, +Y→axis×xRef (so X×Y=Z).
+  const yAxis = new THREE.Vector3().crossVectors(zAxis, xAxis).normalize();
+
+  const mid = new THREE.Vector3().addVectors(from, to).multiplyScalar(0.5);
+  const m = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+  m.setPosition(mid);
+  geometry.applyMatrix4(m);
+}
+
 function tagObject(
   obj: THREE.Object3D,
   treePath: string,
@@ -99,11 +135,19 @@ function tagObject(
 export function buildThreeObject(
   inst: GeometryInstruction,
   mode: string = "solid",
-  treePath?: string
+  treePath?: string,
+  library: MaterialLibrary = new Map()
 ): THREE.Object3D | null {
   switch (inst.type) {
     case "primitive": {
-      const obj = buildPrimitive(inst.kind, inst.params, inst.transform.m, mode);
+      const obj = buildPrimitive(
+        inst.kind,
+        inst.params,
+        inst.transform.m,
+        mode,
+        inst.styles,
+        library
+      );
       if (obj && treePath) {
         tagObject(obj, treePath, { nodeId: inst.node_id });
       }
@@ -123,7 +167,7 @@ export function buildThreeObject(
       for (let i = 0; i < inst.children.length; i++) {
         const child = inst.children[i]!;
         const childPath = groupPath ? `${groupPath}.${i}` : undefined;
-        const obj = buildThreeObject(child, mode, childPath);
+        const obj = buildThreeObject(child, mode, childPath, library);
         if (obj) {
           if (childPath) {
             tagObject(obj, childPath, {
@@ -139,8 +183,11 @@ export function buildThreeObject(
       return g;
     }
     case "bool_op": {
-      const obj = buildBoolOp(inst, mode, (child, m) =>
-        buildThreeObject(child, m ?? mode, treePath)
+      const obj = buildBoolOp(
+        inst,
+        mode,
+        (child, m) => buildThreeObject(child, m ?? mode, treePath, library),
+        library
       );
       if (obj && treePath) {
         tagObject(obj, treePath, { nodeId: inst.node_id });
@@ -168,7 +215,9 @@ export function buildPrimitive(
   kind: string,
   params: Record<string, Value>,
   transform: number[],
-  mode: string
+  mode: string,
+  styles: Record<string, Value> = {},
+  library: MaterialLibrary = new Map()
 ): THREE.Object3D | null {
   let geometry: THREE.BufferGeometry | null = null;
 
@@ -201,7 +250,7 @@ export function buildPrimitive(
     case "sector-cylinder":
     case "cutcylinder": {
       // Spec: `sector-cylinder` (OCC MakeCylinder(r, h, angle)).
-      // `cutcylinder` is a legacy alias.
+      // `cutcylinder` is a legacy alias. θ=0 at +X, CCW about axis.
       const d = num(param(params, "diameter"), 1);
       const bottom = vec3(param(params, "bottomCenterPt"));
       const top = vec3(param(params, "topCenterPt"), [0, 0, 1]);
@@ -212,7 +261,7 @@ export function buildPrimitive(
       );
       const height = bottom.distanceTo(top) || 1;
       geometry = buildSectorCylinderGeometry(d / 2, height, angleDeg);
-      alignAxisY(geometry, bottom, top);
+      alignAxisZ(geometry, bottom, top);
       break;
     }
     case "cone": {
@@ -292,17 +341,17 @@ export function buildPrimitive(
     case "line": {
       geometry = buildLineGeometry(param(params, "from"), param(params, "to"));
       if (!geometry) return null;
-      return curveFromGeometry(geometry, transform);
+      return curveFromGeometry(geometry, transform, styles, library);
     }
     case "arc": {
       geometry = buildArcGeometry(params);
       if (!geometry) return null;
-      return curveFromGeometry(geometry, transform);
+      return curveFromGeometry(geometry, transform, styles, library);
     }
     case "path": {
       geometry = buildPathGeometry(params);
       if (!geometry) return null;
-      return curveFromGeometry(geometry, transform);
+      return curveFromGeometry(geometry, transform, styles, library);
     }
     case "extrude":
     case "polylinestretch": {
@@ -386,7 +435,8 @@ export function buildPrimitive(
       return null;
   }
 
-  return meshFromGeometry(geometry, transform, mode);
+  const hasVertexColors = !!geometry.getAttribute("color");
+  return meshFromGeometry(geometry, transform, mode, styles, library, hasVertexColors);
 }
 
 /**
@@ -497,8 +547,10 @@ function buildWedgeGeometry(
 }
 
 /**
- * Closed sector-cylinder in Three's Y-up / (sinθ, cosθ) frame:
- * curved wall + sector caps + two radial cut faces.
+ * Closed sector-cylinder in Z-up local frame (OCC-style):
+ * - axis along +Z, centered at origin
+ * - θ=0 at +X: (r·cosθ, r·sinθ, z); CCW toward +Y about +Z
+ * - curved wall + sector caps + two radial cut faces
  */
 function buildSectorCylinderGeometry(
   radius: number,
@@ -509,29 +561,20 @@ function buildSectorCylinderGeometry(
   const radialSegments = Math.max(8, Math.ceil(32 * (angle / 360)));
 
   if (angle >= 360 - 1e-3) {
-    return new THREE.CylinderGeometry(
+    // Full cylinder: Three is Y-up — rotate to Z-up for alignAxisZ.
+    const full = new THREE.CylinderGeometry(
       radius,
       radius,
       height,
       radialSegments
     );
+    full.rotateX(Math.PI / 2);
+    return full;
   }
 
   const thetaLength = (angle * Math.PI) / 180;
-  // Open torso only — built-in caps leave the radial cuts open and are easy to
-  // confuse when merging custom walls; we add caps + walls ourselves.
-  const torso = new THREE.CylinderGeometry(
-    radius,
-    radius,
-    height,
-    radialSegments,
-    1,
-    true,
-    0,
-    thetaLength
-  );
   return mergeBufferGeometries([
-    torso,
+    sectorCurvedWall(radius, height, thetaLength, radialSegments),
     sectorCapFace(radius, height / 2, thetaLength, radialSegments, true),
     sectorCapFace(radius, -height / 2, thetaLength, radialSegments, false),
     radialCutFace(radius, height, 0, true),
@@ -539,23 +582,67 @@ function buildSectorCylinderGeometry(
   ]);
 }
 
-/** Flat sector disk at y = ±height/2 (Three theta: x=r·sinθ, z=r·cosθ). */
-function sectorCapFace(
+/** Lateral wall: θ from 0..thetaLength, z from −h/2..+h/2. */
+function sectorCurvedWall(
   radius: number,
-  y: number,
+  height: number,
   thetaLength: number,
-  segments: number,
-  top: boolean
+  segments: number
 ): THREE.BufferGeometry {
-  const positions: number[] = [0, y, 0];
-  const ny = top ? 1 : -1;
-  const normals: number[] = [0, ny, 0];
+  const z0 = -height / 2;
+  const z1 = height / 2;
+  const positions: number[] = [];
+  const normals: number[] = [];
   const indices: number[] = [];
 
   for (let i = 0; i <= segments; i++) {
     const theta = (i / segments) * thetaLength;
-    positions.push(radius * Math.sin(theta), y, radius * Math.cos(theta));
-    normals.push(0, ny, 0);
+    const c = Math.cos(theta);
+    const s = Math.sin(theta);
+    const x = radius * c;
+    const y = radius * s;
+    positions.push(x, y, z0, x, y, z1);
+    normals.push(c, s, 0, c, s, 0);
+  }
+  for (let i = 0; i < segments; i++) {
+    const a = i * 2;
+    const b = a + 1;
+    const c = a + 3;
+    const d = a + 2;
+    indices.push(a, d, c, a, c, b);
+  }
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(positions, 3)
+  );
+  geom.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  geom.setIndex(indices);
+  return geom;
+}
+
+/** Flat sector disk at z = ±height/2 (θ=0 at +X). */
+function sectorCapFace(
+  radius: number,
+  z: number,
+  thetaLength: number,
+  segments: number,
+  top: boolean
+): THREE.BufferGeometry {
+  const positions: number[] = [0, 0, z];
+  const nz = top ? 1 : -1;
+  const normals: number[] = [0, 0, nz];
+  const indices: number[] = [];
+
+  for (let i = 0; i <= segments; i++) {
+    const theta = (i / segments) * thetaLength;
+    positions.push(
+      radius * Math.cos(theta),
+      radius * Math.sin(theta),
+      z
+    );
+    normals.push(0, 0, nz);
   }
   for (let i = 0; i < segments; i++) {
     if (top) indices.push(0, i + 1, i + 2);
@@ -573,8 +660,8 @@ function sectorCapFace(
 }
 
 /**
- * Radial cut wall from axis to rim at `theta`.
- * `atStart`: face at thetaStart (outward = −tangent); else at thetaEnd (+tangent).
+ * Radial cut wall from axis to rim at `theta` (θ=0 → +X).
+ * `atStart`: outward = −tangent (−Y at θ=0); else +tangent.
  */
 function radialCutFace(
   radius: number,
@@ -582,43 +669,42 @@ function radialCutFace(
   theta: number,
   atStart: boolean
 ): THREE.BufferGeometry {
-  const s = Math.sin(theta);
   const c = Math.cos(theta);
-  const y0 = -height / 2;
-  const y1 = height / 2;
-  // Outward: start → (−cos, 0, sin); end → (cos, 0, −sin).
-  const nx = atStart ? -c : c;
-  const nz = atStart ? s : -s;
+  const s = Math.sin(theta);
+  const z0 = -height / 2;
+  const z1 = height / 2;
+  // Tangent ∂/∂θ = (−r sin, r cos) → unit (−s, c); outward for start = −tangent.
+  const nx = atStart ? s : -s;
+  const ny = atStart ? -c : c;
 
   const positions = new Float32Array([
     0,
-    y0,
     0,
-    radius * s,
-    y0,
+    z0,
     radius * c,
     radius * s,
-    y1,
+    z0,
     radius * c,
+    radius * s,
+    z1,
     0,
-    y1,
     0,
+    z1,
   ]);
   const normals = new Float32Array([
     nx,
+    ny,
     0,
-    nz,
     nx,
+    ny,
     0,
-    nz,
     nx,
+    ny,
     0,
-    nz,
     nx,
+    ny,
     0,
-    nz,
   ]);
-  // Winding [0,1,2,0,2,3] yields start-outward; reverse for the end wall.
   const indices = atStart ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2];
 
   const geom = new THREE.BufferGeometry();
@@ -701,17 +787,13 @@ function buildTrianglesGeometry(
 function meshFromGeometry(
   geometry: THREE.BufferGeometry,
   transform: number[],
-  mode: string
+  mode: string,
+  styles: Record<string, Value>,
+  library: MaterialLibrary,
+  vertexColors = false
 ): THREE.Object3D {
-  const material =
-    mode === "wireframe"
-      ? new THREE.MeshBasicMaterial({ color: 0x88aacc, wireframe: true })
-      : new THREE.MeshStandardMaterial({
-          color: 0x88aacc,
-          metalness: 0.1,
-          roughness: 0.6,
-          side: THREE.DoubleSide,
-        });
+  const appearance = resolveAppearance(styles, library);
+  const material = toThreeMaterial(appearance, mode, { vertexColors });
 
   const mesh = new THREE.Mesh(geometry, material);
   const xf = mat4x3ToMatrix4(transform);
@@ -735,12 +817,12 @@ function meshFromGeometry(
 
 function curveFromGeometry(
   geometry: THREE.BufferGeometry,
-  transform: number[]
+  transform: number[],
+  styles: Record<string, Value>,
+  library: MaterialLibrary
 ): THREE.Object3D {
-  const line = new THREE.Line(
-    geometry,
-    new THREE.LineBasicMaterial({ color: 0x334455 })
-  );
+  const appearance = resolveAppearance(styles, library);
+  const line = new THREE.Line(geometry, toThreeLineMaterial(appearance));
   line.applyMatrix4(mat4x3ToMatrix4(transform));
   return line;
 }

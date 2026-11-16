@@ -1,6 +1,11 @@
 import * as THREE from "three";
 import { Brush, Evaluator, ADDITION, SUBTRACTION, INTERSECTION } from "three-bvh-csg";
 import type { GeometryInstruction } from "./types.js";
+import {
+  type MaterialLibrary,
+  resolveAppearance,
+  toThreeMaterial,
+} from "./materials.js";
 
 type BuildFn = (
   inst: GeometryInstruction,
@@ -9,11 +14,13 @@ type BuildFn = (
 
 /**
  * Boolean ops via three-bvh-csg. On failure, falls back to a named group of operands.
+ * Result appearance uses the bool container's styles (fill × material).
  */
 export function buildBoolOp(
   inst: Extract<GeometryInstruction, { type: "bool_op" }>,
   mode: string,
-  build: BuildFn
+  build: BuildFn,
+  library: MaterialLibrary = new Map()
 ): THREE.Object3D | null {
   const operands: THREE.Object3D[] = [];
   for (const child of inst.operands) {
@@ -56,14 +63,10 @@ export function buildBoolOp(
       acc = evaluator.evaluate(acc, next, op);
     }
 
+    const appearance = resolveAppearance(inst.styles, library);
     const out = new THREE.Mesh(
       acc.geometry,
-      new THREE.MeshStandardMaterial({
-        color: 0x88aacc,
-        metalness: 0.1,
-        roughness: 0.6,
-        side: THREE.DoubleSide,
-      })
+      toThreeMaterial(appearance, mode)
     );
     out.name = `bool-${inst.op}`;
     return out;

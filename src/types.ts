@@ -5,8 +5,18 @@ export type Value = number | number[] | boolean | string | Value[] | { [k: strin
 export interface EvaluationResult {
   instructions: GeometryInstruction[];
   models: ModelDesc[];
+  /** Document-defined materials from `<s3dx:materials>` (built-ins are host-side). */
+  materials?: MaterialDesc[];
   active_model: string | null;
   warnings: string[];
+}
+
+export interface MaterialDesc {
+  id: string;
+  /** RGBA sRGB, typically ∈ [0,1]. */
+  color: [number, number, number, number] | number[];
+  metalness: number;
+  roughness: number;
 }
 
 export interface ModelDesc {

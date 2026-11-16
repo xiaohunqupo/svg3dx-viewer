@@ -121,10 +121,10 @@ function initialNormal(
     const n = refDir.clone().addScaledVector(t, -refDir.dot(t));
     if (n.lengthSq() > 1e-12) return n.normalize();
   }
-  // Prefer world +Z as "up", then +Y — gives identity mapping for XY profiles
-  // when the path starts along +X (n=+Y, b=+Z).
+  // World +Z is up (svg3dx): path along +X → n=+Y (in-plane), b=+Z (height).
   let n = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 0, 1), t);
   if (n.lengthSq() < 1e-12) {
+    // Path ∥ ±Z — fall back to +Y as reference.
     n = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), t);
   }
   return n.normalize();

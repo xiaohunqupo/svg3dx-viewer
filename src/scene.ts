@@ -1,8 +1,11 @@
 import * as THREE from "three";
+import { DEFAULT_EYE_OFFSET, WORLD_UP } from "./coords.js";
 import { buildThreeObject } from "./primitive.js";
 import { resolveActiveModel } from "./model.js";
 import { mat4x3ToMatrix4 } from "./transform.js";
 import { remapAsModelUse } from "./pick.js";
+import { materialLibraryFromResult } from "./materials.js";
+import { buildSvg2dObjects } from "./svg2d.js";
 import type { EvaluationResult, GeometryInstruction } from "./types.js";
 
 /** Low-level scene binder: EvaluationResult → THREE objects. */
@@ -29,14 +32,20 @@ export class Svg3dxViewer {
    * Bind evaluated geometry into the scene.
    * When a model is active, only its `<s3dx:use>` references are shown
    * (each with that use's `s3dx:transform`) — not every defs group.
+   * Ordinary SVG 2D tags (text/rect/…) become XY-plane primitives when `svgText` is set.
    */
-  fromResult(result: EvaluationResult, modeOverride?: string): void {
+  fromResult(
+    result: EvaluationResult,
+    modeOverride?: string,
+    svgText?: string
+  ): void {
     this.clear();
     for (const w of result.warnings) {
       console.warn("[svg3dx-viewer]", w);
     }
     const model = resolveActiveModel(result);
     const mode = modeOverride ?? model?.mode ?? "solid";
+    const library = materialLibraryFromResult(result.materials);
 
     const groupsById = new Map<string, GeometryInstruction>();
     for (const inst of result.instructions) {
@@ -56,7 +65,7 @@ export class Svg3dxViewer {
           continue;
         }
         const defsPath = `defs:${use.group_id}`;
-        const obj = buildThreeObject(src, mode, defsPath);
+        const obj = buildThreeObject(src, mode, defsPath, library);
         if (!obj) continue;
         const usePath = `model:${model.id}.${i}`;
         obj.name = `use:${use.group_id}`;
@@ -66,14 +75,18 @@ export class Svg3dxViewer {
         }
         this.root.add(obj);
       }
-      return;
+    } else {
+      for (const inst of result.instructions) {
+        const path =
+          inst.type === "group" && inst.id ? `defs:${inst.id}` : undefined;
+        const obj = buildThreeObject(inst, mode, path, library);
+        if (obj) this.root.add(obj);
+      }
     }
 
-    for (const inst of result.instructions) {
-      const path =
-        inst.type === "group" && inst.id ? `defs:${inst.id}` : undefined;
-      const obj = buildThreeObject(inst, mode, path);
-      if (obj) this.root.add(obj);
+    if (svgText) {
+      const svg2d = buildSvg2dObjects(svgText);
+      if (svg2d) this.root.add(svg2d);
     }
   }
 
@@ -87,7 +100,13 @@ export class Svg3dxViewer {
     const center = box.getCenter(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
     const dist = maxDim * 1.8;
-    camera.position.set(center.x + dist, center.y + dist * 0.7, center.z + dist);
+    // Default iso: viewDir (−1,+1,−1) → eye along (+1,−1,+1)
+    camera.up.copy(WORLD_UP);
+    camera.position.set(
+      center.x + DEFAULT_EYE_OFFSET.x * dist,
+      center.y + DEFAULT_EYE_OFFSET.y * dist,
+      center.z + DEFAULT_EYE_OFFSET.z * dist
+    );
     camera.near = Math.max(0.1, dist / 100);
     camera.far = dist * 100;
     camera.updateProjectionMatrix();
@@ -107,7 +126,11 @@ function disposeObject(obj: THREE.Object3D): void {
     const mat = (m as THREE.Mesh).material;
     if (mat) {
       const mats = Array.isArray(mat) ? mat : [mat];
-      for (const item of mats) item.dispose();
+      for (const item of mats) {
+        const map = (item as THREE.MeshBasicMaterial).map;
+        if (map) map.dispose();
+        item.dispose();
+      }
     }
   });
 }
