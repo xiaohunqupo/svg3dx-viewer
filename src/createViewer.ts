@@ -312,6 +312,11 @@ export class EmbedViewer {
     this.mode = mode;
   }
 
+  /** Update Three.js scene clear / backdrop color (hex number or CSS color string). */
+  setBackground(color: number | string): void {
+    this.scene.background = new THREE.Color(color);
+  }
+
   getResult(): EvaluationResult | null {
     return this.lastResult;
   }

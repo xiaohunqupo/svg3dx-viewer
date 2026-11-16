@@ -1,3 +1,5 @@
+import { ensureChromeStyles } from "./chromeStyles.js";
+
 export interface ModelBarOptions {
   onChange?: (modelId: string) => void;
 }
@@ -11,6 +13,7 @@ export class ModelBar {
 
   constructor(parent: HTMLElement, options: ModelBarOptions = {}) {
     this.onChange = options.onChange;
+    ensureChromeStyles();
 
     this.el = document.createElement("div");
     this.el.className = "svg3dx-model-bar";
@@ -19,12 +22,6 @@ export class ModelBar {
       "align-items:center",
       "gap:6px",
       "padding:4px 8px",
-      "background:rgba(255,255,255,0.92)",
-      "border:1px solid #c5ced8",
-      "border-radius:6px",
-      "box-shadow:0 1px 2px rgba(15,23,42,0.06)",
-      "font:12px/1.3 system-ui,sans-serif",
-      "color:#1f2937",
       "pointer-events:auto",
       "user-select:none",
       "align-self:flex-start",
@@ -41,11 +38,6 @@ export class ModelBar {
       "min-width:7rem",
       "max-width:14rem",
       "padding:2px 6px",
-      "border:1px solid #c5ced8",
-      "border-radius:4px",
-      "background:#fff",
-      "font:inherit",
-      "color:inherit",
     ].join(";");
     this.select.addEventListener("change", () => {
       if (this.suppress) return;

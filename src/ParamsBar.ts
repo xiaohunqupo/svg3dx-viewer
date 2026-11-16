@@ -1,5 +1,6 @@
 import type { ParamDesc } from "./params.js";
 import type { ParamMap } from "./wasm.js";
+import { ensureChromeStyles } from "./chromeStyles.js";
 
 export interface ParamsBarOptions {
   onChange?: (params: ParamMap) => void;
@@ -24,6 +25,7 @@ export class ParamsBar {
   constructor(parent: HTMLElement, options: ParamsBarOptions = {}) {
     this.onChange = options.onChange;
     this.expanded = options.expanded === true;
+    ensureChromeStyles();
 
     this.el = document.createElement("div");
     this.el.className = "svg3dx-params-bar";
@@ -32,12 +34,6 @@ export class ParamsBar {
       "flex-direction:column",
       "min-width:11rem",
       "max-width:16rem",
-      "background:rgba(255,255,255,0.92)",
-      "border:1px solid #c5ced8",
-      "border-radius:6px",
-      "box-shadow:0 1px 2px rgba(15,23,42,0.06)",
-      "font:12px/1.3 system-ui,sans-serif",
-      "color:#1f2937",
       "pointer-events:auto",
       "user-select:none",
       "overflow:hidden",
@@ -82,7 +78,6 @@ export class ParamsBar {
       "flex-direction:column",
       "gap:6px",
       "padding:0 8px 8px",
-      "border-top:1px solid #e5eaf0",
       "max-height:min(40vh, 280px)",
       "overflow:auto",
     ].join(";");
@@ -174,16 +169,7 @@ export class ParamsBar {
       const input = document.createElement("input");
       input.type = d.kind === "number" ? "number" : "text";
       input.value = String(this.params[d.name] ?? d.value ?? "");
-      input.style.cssText = [
-        "width:100%",
-        "min-width:0",
-        "padding:2px 6px",
-        "border:1px solid #c5ced8",
-        "border-radius:4px",
-        "background:#fff",
-        "font:inherit",
-        "color:inherit",
-      ].join(";");
+      input.style.cssText = "width:100%;min-width:0;padding:2px 6px;";
       const commit = () => {
         const raw = input.value;
         this.params[d.name] =
