@@ -28,6 +28,10 @@ function reviveMaps(value: unknown): unknown {
     }
     return obj;
   }
+  // serde-wasm-bindgen emits Float64Array for Vec<f64>; normalize to number[].
+  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+    return Array.from(value as unknown as ArrayLike<number>);
+  }
   if (Array.isArray(value)) {
     return value.map(reviveMaps);
   }

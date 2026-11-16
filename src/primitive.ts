@@ -3,6 +3,20 @@ import type { GeometryInstruction, Value } from "./types.js";
 import { mat4x3ToMatrix4 } from "./transform.js";
 import { buildBoolOp } from "./bool.js";
 import { setPickData } from "./pick.js";
+import { buildPipeGeometry, buildSweepGeometry } from "./sweep.js";
+import {
+  buildArcGeometry,
+  buildLineGeometry,
+  buildPathGeometry,
+} from "./curves.js";
+import {
+  buildExtrudeGeometry,
+  buildLoftGeometry,
+  buildMeshGeometry,
+  buildPrismGeometry,
+  buildPyramidGeometry,
+  buildRevolveGeometry,
+} from "./solids.js";
 
 function num(v: Value | undefined, fallback = 0): number {
   return typeof v === "number" ? v : fallback;
@@ -30,6 +44,11 @@ function vec3(
 ): THREE.Vector3 {
   if (Array.isArray(v) && v.length >= 3 && typeof v[0] === "number") {
     return new THREE.Vector3(v[0], v[1] as number, v[2] as number);
+  }
+  // TypedArray from wasm before revive (defensive)
+  if (ArrayBuffer.isView(v) && (v as ArrayLike<number>).length >= 3) {
+    const a = v as ArrayLike<number>;
+    return new THREE.Vector3(Number(a[0]), Number(a[1]), Number(a[2]));
   }
   return new THREE.Vector3(...fallback);
 }
@@ -229,6 +248,134 @@ export function buildPrimitive(
       geometry.translate(center.x, center.y, center.z);
       break;
     }
+    case "wedge": {
+      // Spec §3.2 / AutoCAD WEDGE: taper along length toward the thin end.
+      // topLength = upper-face length from the thick end (0 → pointed).
+      const l = Math.max(num(param(params, "length"), 1), 1e-6);
+      const w = Math.max(num(param(params, "width"), 1), 1e-6);
+      const h = Math.max(num(param(params, "height"), 1), 1e-6);
+      const topL = THREE.MathUtils.clamp(num(param(params, "topLength"), 0), 0, l);
+      const lengthDir = vec3(param(params, "lengthVec"), [1, 0, 0]);
+      const widthDir = vec3(param(params, "widthVec"), [0, 1, 0]);
+      geometry = buildWedgeGeometry(l, w, h, topL, lengthDir, widthDir);
+      break;
+    }
+    case "pyramid": {
+      const l = Math.max(num(param(params, "length"), 1), 1e-6);
+      const w = Math.max(num(param(params, "width"), 1), 1e-6);
+      const h = Math.max(num(param(params, "height"), 1), 1e-6);
+      const topL = Math.max(num(param(params, "topLength"), 0), 0);
+      const topWRaw = param(params, "topWidth");
+      const topW =
+        topWRaw === undefined ? topL : Math.max(num(topWRaw, topL), 0);
+      geometry = buildPyramidGeometry(
+        l,
+        w,
+        h,
+        topL,
+        topW,
+        vec3(param(params, "lengthVec"), [1, 0, 0]),
+        vec3(param(params, "widthVec"), [0, 1, 0])
+      );
+      if (!geometry) return null;
+      break;
+    }
+    case "prism": {
+      geometry = buildPrismGeometry(
+        param(params, "points"),
+        num(param(params, "height"), 1),
+        param(params, "normal")
+      );
+      if (!geometry) return null;
+      break;
+    }
+    case "line": {
+      geometry = buildLineGeometry(param(params, "from"), param(params, "to"));
+      if (!geometry) return null;
+      return curveFromGeometry(geometry, transform);
+    }
+    case "arc": {
+      geometry = buildArcGeometry(params);
+      if (!geometry) return null;
+      return curveFromGeometry(geometry, transform);
+    }
+    case "path": {
+      geometry = buildPathGeometry(params);
+      if (!geometry) return null;
+      return curveFromGeometry(geometry, transform);
+    }
+    case "extrude":
+    case "polylinestretch": {
+      {
+        const origin = vec3(param(params, "origin"), [0, 0, 0]);
+        const normal = vec3(param(params, "normal"), [0, 0, 1]);
+        const xDir = vec3(param(params, "xDir"), [1, 0, 0]);
+        const dirVal = param(params, "dir") ?? param(params, "normal");
+        geometry = buildExtrudeGeometry(
+          param(params, "section"),
+          dirVal,
+          num(param(params, "length"), 1),
+          { origin, normal, xDir }
+        );
+      }
+      if (!geometry) return null;
+      break;
+    }
+    case "loft": {
+      geometry = buildLoftGeometry(
+        param(params, "sections"),
+        param(params, "solid"),
+        param(params, "blend")
+      );
+      if (!geometry) return null;
+      break;
+    }
+    case "revolve": {
+      {
+        const origin = vec3(param(params, "origin"), [0, 0, 0]);
+        const normal = vec3(param(params, "normal"), [0, 0, 1]);
+        const xDir = vec3(param(params, "xDir"), [1, 0, 0]);
+        geometry = buildRevolveGeometry(
+          param(params, "section"),
+          vec3(param(params, "axisOrigin")),
+          vec3(param(params, "axisDir"), [0, 0, 1]),
+          num(param(params, "angle"), 360),
+          { origin, normal, xDir }
+        );
+      }
+      if (!geometry) return null;
+      break;
+    }
+    case "sweep": {
+      geometry = buildSweepGeometry(
+        param(params, "section"),
+        param(params, "path"),
+        param(params, "orient"),
+        param(params, "refDir"),
+        param(params, "solid"),
+        param(params, "corner"),
+        param(params, "cornerRadius")
+      );
+      if (!geometry) return null;
+      break;
+    }
+    case "pipe": {
+      const inner = param(params, "innerRadius");
+      geometry = buildPipeGeometry(
+        num(param(params, "radius"), 1),
+        inner === undefined ? undefined : num(inner, 0),
+        param(params, "path"),
+        param(params, "corner"),
+        param(params, "cornerRadius")
+      );
+      if (!geometry) return null;
+      break;
+    }
+    case "mesh": {
+      geometry = buildMeshGeometry(params);
+      if (!geometry) return null;
+      break;
+    }
     case "triangles": {
       geometry = buildTrianglesGeometry(params);
       if (!geometry) return null;
@@ -240,6 +387,113 @@ export function buildPrimitive(
   }
 
   return meshFromGeometry(geometry, transform, mode);
+}
+
+/**
+ * AutoCAD-style wedge in local length×width×height, then baked into
+ * lengthVec / widthVec / (lengthVec×widthVec) world axes.
+ *
+ * Corner at origin; thick face at length=0; thin end at +length.
+ * `topLength` is the top-face extent along length from the thick end
+ * (OCC `ltx`); 0 collapses the top to the thick-end ridge.
+ *
+ * Each triangle owns its own verts + flat normal so sharp edges light correctly.
+ */
+function buildWedgeGeometry(
+  length: number,
+  width: number,
+  height: number,
+  topLength: number,
+  lengthVec: THREE.Vector3,
+  widthVec: THREE.Vector3
+): THREE.BufferGeometry {
+  const xAxis = lengthVec.clone().normalize();
+  if (xAxis.lengthSq() < 1e-12) xAxis.set(1, 0, 0);
+
+  let yAxis = widthVec.clone();
+  yAxis.addScaledVector(xAxis, -yAxis.dot(xAxis));
+  if (yAxis.lengthSq() < 1e-12) {
+    yAxis = new THREE.Vector3(0, 1, 0);
+    yAxis.addScaledVector(xAxis, -yAxis.dot(xAxis));
+    if (yAxis.lengthSq() < 1e-12) {
+      yAxis = new THREE.Vector3(0, 0, 1);
+      yAxis.addScaledVector(xAxis, -yAxis.dot(xAxis));
+    }
+  }
+  yAxis.normalize();
+  const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
+
+  const map = (lx: number, ly: number, lz: number): THREE.Vector3 =>
+    new THREE.Vector3()
+      .addScaledVector(xAxis, lx)
+      .addScaledVector(yAxis, ly)
+      .addScaledVector(zAxis, lz);
+
+  // Corner labels in local (length, width, height):
+  //   a000 -------- aL00          top ridge / top face at z=height
+  //    |  bottom z=0  |
+  //   a0W0 -------- aLW0
+  const a000 = map(0, 0, 0);
+  const aL00 = map(length, 0, 0);
+  const aLW0 = map(length, width, 0);
+  const a0W0 = map(0, width, 0);
+  const a00H = map(0, 0, height);
+  const a0WH = map(0, width, height);
+
+  const positions: number[] = [];
+  const normals: number[] = [];
+
+  /** a→b→c must be CCW when viewed from outside; normal = (b−a)×(c−a). */
+  const pushTri = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3) => {
+    const n = new THREE.Vector3()
+      .subVectors(b, a)
+      .cross(new THREE.Vector3().subVectors(c, a));
+    if (n.lengthSq() < 1e-20) return;
+    n.normalize();
+    for (const p of [a, b, c]) {
+      positions.push(p.x, p.y, p.z);
+      normals.push(n.x, n.y, n.z);
+    }
+  };
+
+  /** a→b→c→d CCW from outside. */
+  const pushQuad = (
+    a: THREE.Vector3,
+    b: THREE.Vector3,
+    c: THREE.Vector3,
+    d: THREE.Vector3
+  ) => {
+    pushTri(a, b, c);
+    pushTri(a, c, d);
+  };
+
+  // Bottom (−Z): a000 → a0W0 → aLW0 → aL00
+  pushQuad(a000, a0W0, aLW0, aL00);
+  // Thick end (−X): a000 → a00H → a0WH → a0W0
+  pushQuad(a000, a00H, a0WH, a0W0);
+
+  if (topLength <= 1e-6) {
+    // Slope: a00H → aL00 → aLW0 → a0WH
+    pushQuad(a00H, aL00, aLW0, a0WH);
+    // −Y / +Y triangular sides
+    pushTri(a000, aL00, a00H);
+    pushTri(a0W0, a0WH, aLW0);
+  } else {
+    const aT0H = map(topLength, 0, height);
+    const aTWH = map(topLength, width, height);
+    // Top (+Z)
+    pushQuad(a00H, aT0H, aTWH, a0WH);
+    // Slope
+    pushQuad(aT0H, aL00, aLW0, aTWH);
+    // −Y / +Y
+    pushQuad(a000, aL00, aT0H, a00H);
+    pushQuad(a0W0, a0WH, aTWH, aLW0);
+  }
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geom.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  return geom;
 }
 
 /**
@@ -477,4 +731,16 @@ function meshFromGeometry(
 
   mesh.applyMatrix4(xf);
   return mesh;
+}
+
+function curveFromGeometry(
+  geometry: THREE.BufferGeometry,
+  transform: number[]
+): THREE.Object3D {
+  const line = new THREE.Line(
+    geometry,
+    new THREE.LineBasicMaterial({ color: 0x334455 })
+  );
+  line.applyMatrix4(mat4x3ToMatrix4(transform));
+  return line;
 }
