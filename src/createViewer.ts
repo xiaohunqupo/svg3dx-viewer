@@ -1,6 +1,12 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
+import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+import { OutlinePass } from "three/addons/postprocessing/OutlinePass.js";
+import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
+import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+import { FXAAShader } from "three/addons/shaders/FXAAShader.js";
 import { ViewHelper } from "./vendor/ViewHelper.js";
 import { applyWorldUp, DEFAULT_EYE_OFFSET, WORLD_UP } from "./coords.js";
 import { Svg3dxViewer } from "./scene.js";
@@ -96,6 +102,10 @@ export class EmbedViewer {
   private onPointerDown: ((event: PointerEvent) => void) | null = null;
   private onPointerUp: ((event: PointerEvent) => void) | null = null;
   private pointerDown: { x: number; y: number; button: number } | null = null;
+  /** Official outline postprocessing (webgl_postprocessing_outline). */
+  private composer: EffectComposer;
+  private outlinePass: OutlinePass;
+  private fxaaPass: ShaderPass;
 
   constructor(container: HTMLElement, options: CreateViewerOptions = {}) {
     this.container = container;
@@ -132,6 +142,25 @@ export class EmbedViewer {
     this.viewHelper.center = this.controls.target;
     this.viewHelper.setLabels("X", "Y", "Z");
     this.viewHelper.adaptToBackground(this.scene.background as THREE.Color);
+
+    // Selection outline — same stack as three.js `webgl_postprocessing_outline`.
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.outlinePass = new OutlinePass(
+      new THREE.Vector2(1, 1),
+      this.scene,
+      this.camera
+    );
+    this.outlinePass.edgeStrength = 4;
+    this.outlinePass.edgeThickness = 1.5;
+    this.outlinePass.edgeGlow = 0.15;
+    this.outlinePass.pulsePeriod = 0;
+    this.outlinePass.visibleEdgeColor.set(0xff9a2e);
+    this.outlinePass.hiddenEdgeColor.set(0xb36a10);
+    this.composer.addPass(this.outlinePass);
+    this.composer.addPass(new OutputPass());
+    this.fxaaPass = new ShaderPass(FXAAShader);
+    this.composer.addPass(this.fxaaPass);
 
     if (this.viewHelperVisible && options.viewHelperClick !== false) {
       this.onPointerDown = (event: PointerEvent) => {
@@ -233,14 +262,25 @@ export class EmbedViewer {
       } else {
         this.controls.update();
       }
-      this.renderer.clear();
-      this.renderer.render(this.scene, this.camera);
+      this.composer.render();
       if (this.viewHelperVisible) {
         this.viewHelper.render(this.renderer);
       }
       this.raf = requestAnimationFrame(tick);
     };
     tick();
+  }
+
+  /**
+   * Objects that receive the official OutlinePass contour
+   * (does not alter materials).
+   */
+  setSelectedObjects(objects: THREE.Object3D[]): void {
+    this.outlinePass.selectedObjects = objects;
+  }
+
+  getSelectedObjects(): THREE.Object3D[] {
+    return this.outlinePass.selectedObjects;
   }
 
   async loadSvg(
@@ -365,9 +405,16 @@ export class EmbedViewer {
   private resize(): void {
     const w = this.canvasWrap.clientWidth || 1;
     const h = this.canvasWrap.clientHeight || 1;
+    const pr = this.renderer.getPixelRatio();
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h, false);
+    this.composer.setPixelRatio(pr);
+    this.composer.setSize(w, h);
+    this.fxaaPass.material.uniforms["resolution"].value.set(
+      1 / (w * pr),
+      1 / (h * pr)
+    );
   }
 
   dispose(): void {
@@ -384,6 +431,7 @@ export class EmbedViewer {
         this.onPointerUp
       );
     }
+    this.outlinePass.selectedObjects = [];
     this.viewHelper.dispose();
     const ro = (this as unknown as { _ro?: ResizeObserver })._ro;
     ro?.disconnect();
