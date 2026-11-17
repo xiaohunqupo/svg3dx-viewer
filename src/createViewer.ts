@@ -94,6 +94,8 @@ export class EmbedViewer {
   private mode?: string;
   private lastResult: EvaluationResult | null = null;
   private raf = 0;
+  private resizeRaf = 0;
+  private lastCssSize = { w: 0, h: 0 };
   private clock = new THREE.Clock();
   private onParamsChange?: (params: ParamMap) => void;
   private onWarnings?: (warnings: string[]) => void;
@@ -257,7 +259,7 @@ export class EmbedViewer {
       ? new ParamsBar(this.leftChrome!, { onChange: onParamsEdited })
       : null;
 
-    const ro = new ResizeObserver(() => this.resize());
+    const ro = new ResizeObserver(() => this.scheduleResize());
     ro.observe(this.canvasWrap);
     (this as unknown as { _ro: ResizeObserver })._ro = ro;
 
@@ -271,10 +273,7 @@ export class EmbedViewer {
       } else {
         this.controls.update();
       }
-      this.composer.render();
-      if (this.viewHelperVisible) {
-        this.viewHelper.render(this.renderer);
-      }
+      this.paint();
       this.raf = requestAnimationFrame(tick);
     };
     tick();
@@ -411,9 +410,23 @@ export class EmbedViewer {
     this.modelBar.setModels(models, active);
   }
 
+  /**
+   * Coalesce ResizeObserver bursts (panel drag) to one apply per frame.
+   * setSize clears the drawing buffer — paint immediately after to avoid a black flash.
+   */
+  private scheduleResize(): void {
+    if (this.resizeRaf) return;
+    this.resizeRaf = requestAnimationFrame(() => {
+      this.resizeRaf = 0;
+      this.resize();
+    });
+  }
+
   private resize(): void {
     const w = this.canvasWrap.clientWidth || 1;
     const h = this.canvasWrap.clientHeight || 1;
+    if (w === this.lastCssSize.w && h === this.lastCssSize.h) return;
+    this.lastCssSize = { w, h };
     const pr = this.renderer.getPixelRatio();
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
@@ -424,10 +437,23 @@ export class EmbedViewer {
       1 / (w * pr),
       1 / (h * pr)
     );
+    // Buffer/targets were reallocated and cleared; redraw before the browser paints.
+    this.paint();
+  }
+
+  private paint(): void {
+    this.composer.render();
+    if (this.viewHelperVisible) {
+      this.viewHelper.render(this.renderer);
+    }
   }
 
   dispose(): void {
     cancelAnimationFrame(this.raf);
+    if (this.resizeRaf) {
+      cancelAnimationFrame(this.resizeRaf);
+      this.resizeRaf = 0;
+    }
     if (this.onPointerDown) {
       this.renderer.domElement.removeEventListener(
         "pointerdown",
