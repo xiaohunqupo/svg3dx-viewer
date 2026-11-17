@@ -144,7 +144,16 @@ export class EmbedViewer {
     this.viewHelper.adaptToBackground(this.scene.background as THREE.Color);
 
     // Selection outline — same stack as three.js `webgl_postprocessing_outline`.
-    this.composer = new EffectComposer(this.renderer);
+    // MSAA on composer RTs (renderer.antialias alone does not apply through EffectComposer).
+    const size = this.renderer.getSize(new THREE.Vector2());
+    const pr = this.renderer.getPixelRatio();
+    const composerTarget = new THREE.WebGLRenderTarget(
+      Math.max(1, Math.floor(size.width * pr)),
+      Math.max(1, Math.floor(size.height * pr)),
+      { type: THREE.HalfFloatType, samples: 4 }
+    );
+    composerTarget.texture.name = "EffectComposer.rt1";
+    this.composer = new EffectComposer(this.renderer, composerTarget);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.outlinePass = new OutlinePass(
       new THREE.Vector2(1, 1),
