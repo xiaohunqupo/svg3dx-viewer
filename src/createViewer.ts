@@ -335,6 +335,7 @@ export class EmbedViewer {
     if (result.warnings.length) this.onWarnings?.(result.warnings);
     this.viewer.fromResult(result, this.mode, this.svgText);
     if (options.fitCamera !== false) {
+      // Returns false on empty scene; still resets camera to a safe iso.
       this.viewer.fitCamera(this.camera, this.controls);
     }
     this.syncParamsUi(result);

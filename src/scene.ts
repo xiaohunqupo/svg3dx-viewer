@@ -57,6 +57,7 @@ export class Svg3dxViewer {
     if (model && model.uses.length > 0) {
       for (let i = 0; i < model.uses.length; i++) {
         const use = model.uses[i]!;
+        if (!use.group_id) continue;
         const src = groupsById.get(use.group_id);
         if (!src) {
           console.warn(
@@ -90,18 +91,41 @@ export class Svg3dxViewer {
     }
   }
 
+  /**
+   * Frame the camera on scene content.
+   * @returns `true` when bounds were non-empty and the camera was framed;
+   * `false` when empty (still resets to a safe iso so OrbitControls is not singular).
+   */
   fitCamera(
     camera: THREE.PerspectiveCamera,
     controls?: { target: THREE.Vector3; update: () => void }
-  ): void {
+  ): boolean {
     const box = new THREE.Box3().setFromObject(this.root);
-    if (box.isEmpty()) return;
+    camera.up.copy(WORLD_UP);
+    if (box.isEmpty()) {
+      // Camera at origin + target at origin makes OrbitControls unusable.
+      const dist = 10;
+      camera.position.set(
+        DEFAULT_EYE_OFFSET.x * dist,
+        DEFAULT_EYE_OFFSET.y * dist,
+        DEFAULT_EYE_OFFSET.z * dist
+      );
+      camera.near = 0.1;
+      camera.far = 10000;
+      camera.updateProjectionMatrix();
+      if (controls) {
+        controls.target.set(0, 0, 0);
+        controls.update();
+      } else {
+        camera.lookAt(0, 0, 0);
+      }
+      return false;
+    }
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z) || 1;
     const dist = maxDim * 1.8;
     // Default iso: viewDir (−1,+1,−1) → eye along (+1,−1,+1)
-    camera.up.copy(WORLD_UP);
     camera.position.set(
       center.x + DEFAULT_EYE_OFFSET.x * dist,
       center.y + DEFAULT_EYE_OFFSET.y * dist,
@@ -116,6 +140,7 @@ export class Svg3dxViewer {
     } else {
       camera.lookAt(center);
     }
+    return true;
   }
 }
 
