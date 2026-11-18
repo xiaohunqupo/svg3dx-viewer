@@ -8,6 +8,14 @@ import { materialLibraryFromResult } from "./materials.js";
 import { buildSvg2dObjects } from "./svg2d.js";
 import type { EvaluationResult, GeometryInstruction } from "./types.js";
 
+export interface FitCameraOptions {
+  /**
+   * Eye offset from target (default: CAD iso).
+   * Use `TOP_EYE_OFFSET` for the ViewHelper +Z (top-down) home.
+   */
+  eyeOffset?: THREE.Vector3;
+}
+
 /** Low-level scene binder: EvaluationResult → THREE objects. */
 export class Svg3dxViewer {
   readonly scene: THREE.Scene;
@@ -98,19 +106,18 @@ export class Svg3dxViewer {
    */
   fitCamera(
     camera: THREE.PerspectiveCamera,
-    controls?: { target: THREE.Vector3; update: () => void }
+    controls?: { target: THREE.Vector3; update: () => void },
+    options: FitCameraOptions = {}
   ): boolean {
     this.root.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(this.root);
+    const eye = (options.eyeOffset ?? DEFAULT_EYE_OFFSET).clone().normalize();
+    // Always Z-up so OrbitControls orbits around world +Z (CAD-style).
     camera.up.copy(WORLD_UP);
     if (box.isEmpty()) {
       // Camera at origin + target at origin makes OrbitControls unusable.
       const dist = 10;
-      camera.position.set(
-        DEFAULT_EYE_OFFSET.x * dist,
-        DEFAULT_EYE_OFFSET.y * dist,
-        DEFAULT_EYE_OFFSET.z * dist
-      );
+      camera.position.set(eye.x * dist, eye.y * dist, eye.z * dist);
       camera.near = 0.1;
       camera.far = 10000;
       camera.updateProjectionMatrix();
@@ -132,8 +139,6 @@ export class Svg3dxViewer {
     const fitH = radius / Math.tan(fov / 2);
     const fitW = radius / (Math.tan(fov / 2) * aspect);
     const dist = Math.max(fitH, fitW) * 1.35;
-    // Default iso: viewDir (−1,+1,−1) → eye along (+1,−1,+1)
-    const eye = DEFAULT_EYE_OFFSET.clone().normalize();
     camera.position.set(
       center.x + eye.x * dist,
       center.y + eye.y * dist,

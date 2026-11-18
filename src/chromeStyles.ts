@@ -3,7 +3,8 @@ const STYLE_ID = "svg3dx-viewer-chrome-styles";
 
 const CSS = `
 .svg3dx-model-bar,
-.svg3dx-params-bar {
+.svg3dx-params-bar,
+.svg3dx-display-mode-bar {
   background: var(--svg3dx-chrome-bg, rgba(255, 255, 255, 0.92));
   border: 1px solid var(--svg3dx-chrome-border, #c5ced8);
   border-radius: 6px;
@@ -24,6 +25,25 @@ const CSS = `
 
 .svg3dx-params-bar__body {
   border-top: 1px solid var(--svg3dx-chrome-divider, #e5eaf0);
+}
+
+.svg3dx-kernel-host {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--svg3dx-kernel-bg, transparent);
+}
+
+.svg3dx-kernel-host > svg {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  flex: 0 0 auto;
 }
 `;
 

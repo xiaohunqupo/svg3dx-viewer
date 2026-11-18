@@ -8,11 +8,26 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { FXAAShader } from "three/addons/shaders/FXAAShader.js";
 import { ViewHelper } from "./vendor/ViewHelper.js";
-import { applyWorldUp, DEFAULT_EYE_OFFSET, WORLD_UP } from "./coords.js";
+import {
+  applyWorldUp,
+  DEFAULT_EYE_OFFSET,
+  TOP_EYE_OFFSET,
+  WORLD_UP,
+} from "./coords.js";
 import { Svg3dxViewer } from "./scene.js";
 import { ParamPanel } from "./ParamPanel.js";
 import { ModelBar } from "./ModelBar.js";
 import { ParamsBar } from "./ParamsBar.js";
+import { DisplayModeBar, type DisplayModeState } from "./DisplayModeBar.js";
+import { ensureChromeStyles } from "./chromeStyles.js";
+import {
+  detectViewerLocale,
+  type ViewerLocale,
+} from "./chromeLocale.js";
+import {
+  emptyEvaluationResult,
+  isSvg3dxDocument,
+} from "./documentKind.js";
 import { extractStyleParams, listParams } from "./params.js";
 import { initWasm, parseSvg, type ParamMap } from "./wasm.js";
 import type { EvaluationResult } from "./types.js";
@@ -45,8 +60,19 @@ export interface CreateViewerOptions {
   /**
    * Show collapsible Params panel under the Model bar (default true).
    * Lists `:root` external params; edits re-evaluate the model.
+   * Hidden automatically for plain SVG (no `svg3d="true"`).
    */
   paramsBar?: boolean;
+  /**
+   * Show Kernel / svg3dx display-mode toggles for plain SVG (default true).
+   * Both modes start enabled. Hidden for svg3dx documents.
+   */
+  displayModeBar?: boolean;
+  /**
+   * Overlay chrome language (`zh` / `en`). Default: browser language.
+   * Call `setLocale` later when the host app language changes.
+   */
+  locale?: ViewerLocale;
   /**
    * Show top-right orientation gizmo (default true).
    * When false, the helper is not rendered and its clicks are ignored.
@@ -83,16 +109,23 @@ export class EmbedViewer {
   readonly paramPanel: ParamPanel | null;
   readonly modelBar: ModelBar | null;
   readonly paramsBar: ParamsBar | null;
+  readonly displayModeBar: DisplayModeBar | null;
   /** Whether the top-right ViewHelper gizmo is shown. */
   readonly viewHelperVisible: boolean;
 
+  private stage: HTMLElement;
   private canvasWrap: HTMLElement;
+  private kernelHost: HTMLElement;
   private leftChrome: HTMLElement | null = null;
   private svgText = "";
   private params: ParamMap;
   private model?: string;
   private mode?: string;
   private lastResult: EvaluationResult | null = null;
+  /** True when the loaded document has no `svg3d="true"`. */
+  private plainSvg = false;
+  private displayModes: DisplayModeState = { kernel: true, svg3dx: true };
+  private locale: ViewerLocale;
   private raf = 0;
   private resizeRaf = 0;
   /** Re-fit once the canvas has a real size (initial layout often 0×0 / tiny). */
@@ -125,13 +158,28 @@ export class EmbedViewer {
     this.onWarnings = options.onWarnings;
     this.onResult = options.onResult;
     this.onModelChange = options.onModelChange;
+    this.locale = options.locale ?? detectViewerLocale();
 
     container.style.position = container.style.position || "relative";
+    ensureChromeStyles();
+
+    this.stage = document.createElement("div");
+    this.stage.className = "svg3dx-stage";
+    this.stage.style.cssText =
+      "position:absolute;inset:0;display:flex;flex-direction:row;min-width:0;min-height:0;overflow:hidden;";
+    container.appendChild(this.stage);
+
+    this.kernelHost = document.createElement("div");
+    this.kernelHost.className = "svg3dx-kernel-host";
+    this.kernelHost.style.cssText =
+      "display:none;flex:1 1 0;min-width:0;min-height:0;overflow:auto;";
+    this.stage.appendChild(this.kernelHost);
+
     this.canvasWrap = document.createElement("div");
     // min-height:0 so flex/grid parents can shrink; hosts set their own min size.
     this.canvasWrap.style.cssText =
-      "position:relative;width:100%;height:100%;min-height:0;overflow:hidden;";
-    container.appendChild(this.canvasWrap);
+      "position:relative;flex:1 1 0;width:auto;height:auto;min-width:0;min-height:0;overflow:hidden;";
+    this.stage.appendChild(this.canvasWrap);
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(options.background ?? 0xe8eef2);
@@ -149,7 +197,12 @@ export class EmbedViewer {
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
-    this.controls.addEventListener("start", () => {
+    // OrbitControls event map is `never` under some @types/three versions.
+    (
+      this.controls as unknown as {
+        addEventListener: (type: string, listener: () => void) => void;
+      }
+    ).addEventListener("start", () => {
       this.autoFit = false;
       this.pendingFit = false;
     });
@@ -244,7 +297,8 @@ export class EmbedViewer {
 
     const wantModelBar = options.modelBar !== false;
     const wantParamsBar = options.paramsBar !== false;
-    if (wantModelBar || wantParamsBar) {
+    const wantDisplayModeBar = options.displayModeBar !== false;
+    if (wantModelBar || wantParamsBar || wantDisplayModeBar) {
       this.leftChrome = document.createElement("div");
       this.leftChrome.className = "svg3dx-left-chrome";
       this.leftChrome.style.cssText = [
@@ -259,12 +313,24 @@ export class EmbedViewer {
         "max-width:min(16rem, calc(100% - 20px))",
         "pointer-events:none",
       ].join(";");
-      // Children re-enable pointer events.
-      this.canvasWrap.appendChild(this.leftChrome);
+      // Overlay the whole stage so chrome stays visible in kernel-only mode.
+      container.appendChild(this.leftChrome);
     }
+
+    this.displayModeBar = wantDisplayModeBar
+      ? new DisplayModeBar(this.leftChrome!, {
+          initial: this.displayModes,
+          locale: this.locale,
+          onChange: (state) => {
+            this.displayModes = state;
+            this.applyDisplayLayout();
+          },
+        })
+      : null;
 
     this.modelBar = wantModelBar
       ? new ModelBar(this.leftChrome!, {
+          locale: this.locale,
           onChange: (id) => {
             void this.setModel(id, { fitCamera: true });
             this.onModelChange?.(id);
@@ -273,11 +339,15 @@ export class EmbedViewer {
       : null;
 
     this.paramsBar = wantParamsBar
-      ? new ParamsBar(this.leftChrome!, { onChange: onParamsEdited })
+      ? new ParamsBar(this.leftChrome!, {
+          locale: this.locale,
+          onChange: onParamsEdited,
+        })
       : null;
 
     const ro = new ResizeObserver(() => this.scheduleResize());
     ro.observe(this.canvasWrap);
+    ro.observe(this.stage);
     (this as unknown as { _ro: ResizeObserver })._ro = ro;
 
     this.resize();
@@ -392,24 +462,73 @@ export class EmbedViewer {
     return this.lastResult;
   }
 
+  /** True when the last loaded document is plain SVG (no `svg3d="true"`). */
+  isPlainSvg(): boolean {
+    return this.plainSvg;
+  }
+
+  getDisplayModes(): DisplayModeState {
+    return { ...this.displayModes };
+  }
+
+  setDisplayModes(state: Partial<DisplayModeState>): void {
+    this.displayModes = {
+      kernel: state.kernel ?? this.displayModes.kernel,
+      svg3dx: state.svg3dx ?? this.displayModes.svg3dx,
+    };
+    this.displayModeBar?.setState(this.displayModes);
+    this.applyDisplayLayout();
+  }
+
+  getLocale(): ViewerLocale {
+    return this.locale;
+  }
+
+  /** Update overlay chrome language (Model / Params / Display toggles). */
+  setLocale(locale: ViewerLocale): void {
+    this.locale = locale;
+    this.displayModeBar?.setLocale(locale);
+    this.modelBar?.setLocale(locale);
+    this.paramsBar?.setLocale(locale);
+  }
+
   private async reload(
     options: { fitCamera?: boolean } = {}
   ): Promise<EvaluationResult> {
-    const result = await parseSvg(this.svgText, this.params, this.model);
+    this.plainSvg = !isSvg3dxDocument(this.svgText);
+    this.applyDisplayLayout();
+
+    let result: EvaluationResult;
+    if (this.plainSvg) {
+      // Core refuses evaluation without svg3d="true"; still show 2D via svg2d + kernel.
+      result = emptyEvaluationResult();
+    } else {
+      result = await parseSvg(this.svgText, this.params, this.model);
+    }
+
     this.lastResult = result;
     if (result.warnings.length) this.onWarnings?.(result.warnings);
-    this.viewer.fromResult(result, this.mode, this.svgText);
+    this.viewer.fromResult(
+      result,
+      this.mode,
+      // Always pass markup so ordinary SVG tags become XY-plane primitives.
+      this.svgText
+    );
+    this.syncKernelHost();
+    this.syncChromeForDocument(result);
     if (options.fitCamera !== false) {
       this.autoFit = true;
-      // Returns false on empty scene; still resets camera to a safe iso.
-      const framed = this.viewer.fitCamera(this.camera, this.controls);
+      // Plain SVG → ViewHelper +Z home; svg3dx → CAD iso. No other differences.
+      const framed = this.viewer.fitCamera(
+        this.camera,
+        this.controls,
+        this.fitCameraOptions()
+      );
       const w = this.canvasWrap.clientWidth;
       const h = this.canvasWrap.clientHeight;
       // Fit before layout settles uses a wrong aspect — redo on next good resize.
       this.pendingFit = framed && (w < 32 || h < 32);
     }
-    this.syncParamsUi(result);
-    this.syncModelBar(result);
     this.onResult?.(result);
     return result;
   }
@@ -422,6 +541,10 @@ export class EmbedViewer {
 
   private syncModelBar(result: EvaluationResult | null): void {
     if (!this.modelBar) return;
+    if (this.plainSvg) {
+      this.modelBar.setModels([], null);
+      return;
+    }
     const models = result?.models ?? [];
     const active =
       this.model ??
@@ -430,6 +553,63 @@ export class EmbedViewer {
       models[0]?.id ??
       null;
     this.modelBar.setModels(models, active);
+  }
+
+  private syncChromeForDocument(result: EvaluationResult | null): void {
+    this.displayModeBar?.setVisible(this.plainSvg);
+    if (this.plainSvg) {
+      if (this.paramsBar) this.paramsBar.el.style.display = "none";
+      this.syncModelBar(result);
+      return;
+    }
+    if (this.paramsBar) this.paramsBar.el.style.display = "flex";
+    this.syncParamsUi(result);
+    this.syncModelBar(result);
+  }
+
+  /** Browser-native SVG pane for plain documents (内核 mode). */
+  private syncKernelHost(): void {
+    this.kernelHost.replaceChildren();
+    if (!this.plainSvg || !this.svgText.trim()) return;
+    if (typeof DOMParser === "undefined") return;
+    const parsed = new DOMParser().parseFromString(this.svgText, "image/svg+xml");
+    if (parsed.querySelector("parsererror")) {
+      const pre = document.createElement("pre");
+      pre.textContent = this.svgText;
+      pre.style.cssText =
+        "margin:0;padding:12px;font:12px/1.4 ui-monospace,monospace;white-space:pre-wrap;";
+      this.kernelHost.appendChild(pre);
+      return;
+    }
+    const root = parsed.documentElement;
+    if (!root || root.localName.toLowerCase() !== "svg") return;
+    const svg = document.importNode(root, true) as unknown as SVGSVGElement;
+    if (!svg.getAttribute("xmlns")) {
+      svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    }
+    this.kernelHost.appendChild(svg);
+  }
+
+  private applyDisplayLayout(): void {
+    if (!this.plainSvg) {
+      this.kernelHost.style.display = "none";
+      this.canvasWrap.style.display = "block";
+      this.canvasWrap.style.flex = "1 1 0";
+      this.scheduleResize();
+      return;
+    }
+    const showKernel = this.displayModes.kernel;
+    const showSvg3dx = this.displayModes.svg3dx;
+    this.kernelHost.style.display = showKernel ? "flex" : "none";
+    this.kernelHost.style.flex = showKernel ? "1 1 0" : "0 0 0";
+    this.canvasWrap.style.display = showSvg3dx ? "block" : "none";
+    this.canvasWrap.style.flex = showSvg3dx ? "1 1 0" : "0 0 0";
+    this.scheduleResize();
+  }
+
+  /** Plain SVG uses ViewHelper +Z; otherwise default CAD iso. */
+  private fitCameraOptions(): { eyeOffset?: THREE.Vector3 } {
+    return this.plainSvg ? { eyeOffset: TOP_EYE_OFFSET } : {};
   }
 
   /**
@@ -452,7 +632,11 @@ export class EmbedViewer {
     if (sizeUnchanged) {
       if (this.pendingFit && w >= 32 && h >= 32) {
         this.pendingFit = false;
-        this.viewer.fitCamera(this.camera, this.controls);
+        this.viewer.fitCamera(
+          this.camera,
+          this.controls,
+          this.fitCameraOptions()
+        );
         this.paint();
       }
       return;
@@ -478,7 +662,11 @@ export class EmbedViewer {
       (this.autoFit && w >= 32 && h >= 32 && aspectDelta > 0.08);
     if (shouldRefit) {
       this.pendingFit = false;
-      this.viewer.fitCamera(this.camera, this.controls);
+      this.viewer.fitCamera(
+        this.camera,
+        this.controls,
+        this.fitCameraOptions()
+      );
     }
     // Buffer/targets were reallocated and cleared; redraw before the browser paints.
     this.paint();
@@ -517,6 +705,7 @@ export class EmbedViewer {
     this.viewHelper.dispose();
     const ro = (this as unknown as { _ro?: ResizeObserver })._ro;
     ro?.disconnect();
+    this.displayModeBar?.dispose();
     this.paramsBar?.dispose();
     this.modelBar?.dispose();
     this.leftChrome?.remove();
@@ -524,6 +713,7 @@ export class EmbedViewer {
     this.scene.environment?.dispose();
     this.scene.environment = null;
     this.renderer.dispose();
-    this.canvasWrap.remove();
+    this.kernelHost.replaceChildren();
+    this.stage.remove();
   }
 }

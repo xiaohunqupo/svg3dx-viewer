@@ -1,8 +1,14 @@
 import type { ParamDesc } from "./params.js";
 import type { ParamMap } from "./wasm.js";
 import { ensureChromeStyles } from "./chromeStyles.js";
+import {
+  chromeStrings,
+  detectViewerLocale,
+  type ViewerLocale,
+} from "./chromeLocale.js";
 
 export interface ParamsBarOptions {
+  locale?: ViewerLocale;
   onChange?: (params: ParamMap) => void;
   /** Start expanded (default false). */
   expanded?: boolean;
@@ -15,16 +21,20 @@ export interface ParamsBarOptions {
 export class ParamsBar {
   readonly el: HTMLElement;
   private headerBtn: HTMLButtonElement;
+  private titleEl: HTMLSpanElement;
   private chevron: HTMLSpanElement;
   private body: HTMLElement;
   private params: ParamMap = {};
+  private lastDescs: ParamDesc[] | undefined;
   private onChange?: (params: ParamMap) => void;
   private expanded: boolean;
   private hasParams = false;
+  private locale: ViewerLocale;
 
   constructor(parent: HTMLElement, options: ParamsBarOptions = {}) {
     this.onChange = options.onChange;
     this.expanded = options.expanded === true;
+    this.locale = options.locale ?? detectViewerLocale();
     ensureChromeStyles();
 
     this.el = document.createElement("div");
@@ -57,16 +67,15 @@ export class ParamsBar {
       "text-align:left",
     ].join(";");
 
-    const title = document.createElement("span");
-    title.textContent = "Params";
-    title.style.cssText = "font-weight:600;white-space:nowrap;";
+    this.titleEl = document.createElement("span");
+    this.titleEl.style.cssText = "font-weight:600;white-space:nowrap;";
 
     this.chevron = document.createElement("span");
     this.chevron.setAttribute("aria-hidden", "true");
     this.chevron.style.cssText =
       "font-size:10px;opacity:0.65;transition:transform 0.12s ease;";
 
-    this.headerBtn.append(title, this.chevron);
+    this.headerBtn.append(this.titleEl, this.chevron);
     this.headerBtn.addEventListener("click", () => {
       this.setExpanded(!this.expanded);
     });
@@ -88,7 +97,15 @@ export class ParamsBar {
 
     this.el.append(this.headerBtn, this.body);
     parent.appendChild(this.el);
+    this.applyLocale();
     this.syncExpandedUi();
+  }
+
+  setLocale(locale: ViewerLocale): void {
+    this.locale = locale;
+    this.applyLocale();
+    // Refresh empty-state / tooltip copy for the new locale.
+    this.setParams(this.params, this.lastDescs);
   }
 
   setExpanded(expanded: boolean): void {
@@ -102,6 +119,8 @@ export class ParamsBar {
 
   setParams(params: ParamMap, descs?: ParamDesc[]): void {
     this.params = { ...params };
+    this.lastDescs = descs;
+    const s = chromeStrings(this.locale);
     const list =
       descs ??
       Object.keys(this.params)
@@ -122,7 +141,7 @@ export class ParamsBar {
 
     if (!list.length) {
       const empty = document.createElement("div");
-      empty.textContent = "No editable params";
+      empty.textContent = s.noEditableParams;
       empty.style.cssText = "opacity:0.6;padding-top:6px;";
       this.body.appendChild(empty);
     } else {
@@ -132,8 +151,12 @@ export class ParamsBar {
     }
 
     this.headerBtn.title = this.hasParams
-      ? `${list.length} param${list.length === 1 ? "" : "s"}`
-      : "No editable params";
+      ? s.paramsCount(list.length)
+      : s.noEditableParams;
+  }
+
+  private applyLocale(): void {
+    this.titleEl.textContent = chromeStrings(this.locale).params;
   }
 
   getParams(): ParamMap {
