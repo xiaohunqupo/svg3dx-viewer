@@ -36,6 +36,7 @@ import type { EvaluationResult } from "./types.js";
 applyWorldUp();
 
 const PICK_DRAG_PX = 5;
+const AXES_UNIT = 1;
 
 export interface CreateViewerOptions {
   /** Mount param panel into this element (optional). */
@@ -84,6 +85,11 @@ export interface CreateViewerOptions {
    * Ignored when `viewHelper` is false.
    */
   viewHelperClick?: boolean;
+  /**
+   * Show world-origin XYZ axes in the scene (default true).
+   * Lives outside the svg3dx root so document reloads do not dispose it.
+   */
+  axesHelper?: boolean;
 }
 
 /**
@@ -112,6 +118,8 @@ export class EmbedViewer {
   readonly displayModeBar: DisplayModeBar | null;
   /** Whether the top-right ViewHelper gizmo is shown. */
   readonly viewHelperVisible: boolean;
+  /** Whether the world-origin XYZ axes are shown. */
+  readonly axesHelperVisible: boolean;
 
   private stage: HTMLElement;
   private canvasWrap: HTMLElement;
@@ -148,6 +156,7 @@ export class EmbedViewer {
   private composer: EffectComposer;
   private outlinePass: OutlinePass;
   private fxaaPass: ShaderPass;
+  private axesHelper: THREE.AxesHelper | null = null;
 
   constructor(container: HTMLElement, options: CreateViewerOptions = {}) {
     this.container = container;
@@ -283,6 +292,14 @@ export class EmbedViewer {
     const fill = new THREE.DirectionalLight(0xffffff, 0.35);
     fill.position.set(-DEFAULT_EYE_OFFSET.x, -DEFAULT_EYE_OFFSET.y, DEFAULT_EYE_OFFSET.z).normalize().multiplyScalar(4);
     this.scene.add(fill);
+
+    this.axesHelperVisible = options.axesHelper !== false;
+    if (this.axesHelperVisible) {
+      this.axesHelper = new THREE.AxesHelper(AXES_UNIT);
+      this.axesHelper.name = "svg3dx-world-axes";
+      // Keep outside Svg3dxViewer.root so document reloads do not dispose it.
+      this.scene.add(this.axesHelper);
+    }
 
     this.viewer = new Svg3dxViewer(this.scene);
 
@@ -514,6 +531,7 @@ export class EmbedViewer {
       // Always pass markup so ordinary SVG tags become XY-plane primitives.
       this.svgText
     );
+    this.syncAxesHelperSize();
     this.syncKernelHost();
     this.syncChromeForDocument(result);
     if (options.fitCamera !== false) {
@@ -683,6 +701,18 @@ export class EmbedViewer {
     }
   }
 
+  /** Scale world axes from content bounds (no-op when axes are disabled). */
+  private syncAxesHelperSize(): void {
+    if (!this.axesHelper) return;
+    this.viewer.root.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(this.viewer.root);
+    let len = 10;
+    if (!box.isEmpty()) {
+      len = Math.max(box.getSize(new THREE.Vector3()).length() * 0.2, 1);
+    }
+    this.axesHelper.scale.setScalar(len / AXES_UNIT);
+  }
+
   dispose(): void {
     cancelAnimationFrame(this.raf);
     if (this.resizeRaf) {
@@ -703,6 +733,14 @@ export class EmbedViewer {
     }
     this.outlinePass.selectedObjects = [];
     this.viewHelper.dispose();
+    if (this.axesHelper) {
+      this.scene.remove(this.axesHelper);
+      this.axesHelper.geometry.dispose();
+      const mat = this.axesHelper.material;
+      if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+      else mat.dispose();
+      this.axesHelper = null;
+    }
     const ro = (this as unknown as { _ro?: ResizeObserver })._ro;
     ro?.disconnect();
     this.displayModeBar?.dispose();
