@@ -95,6 +95,13 @@ export class EmbedViewer {
   private lastResult: EvaluationResult | null = null;
   private raf = 0;
   private resizeRaf = 0;
+  /** Re-fit once the canvas has a real size (initial layout often 0×0 / tiny). */
+  private pendingFit = false;
+  /**
+   * Keep auto-framing on layout/aspect changes until the user orbits/pans/zooms.
+   * Avoids “off-center / clipped” after panel resize or HiDPI first paint.
+   */
+  private autoFit = true;
   private lastCssSize = { w: 0, h: 0 };
   private clock = new THREE.Clock();
   private onParamsChange?: (params: ParamMap) => void;
@@ -121,8 +128,9 @@ export class EmbedViewer {
 
     container.style.position = container.style.position || "relative";
     this.canvasWrap = document.createElement("div");
+    // min-height:0 so flex/grid parents can shrink; hosts set their own min size.
     this.canvasWrap.style.cssText =
-      "position:relative;width:100%;height:100%;min-height:240px;";
+      "position:relative;width:100%;height:100%;min-height:0;overflow:hidden;";
     container.appendChild(this.canvasWrap);
 
     this.scene = new THREE.Scene();
@@ -132,10 +140,19 @@ export class EmbedViewer {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // Keep CSS size = container; buffer size may be larger via pixelRatio.
+    // Without this, setSize(w,h,false) leaves canvas layout at bitmap size (w*pr)
+    // and the view overflows / looks off-center on HiDPI.
+    this.renderer.domElement.style.cssText =
+      "display:block;width:100%;height:100%;";
     this.canvasWrap.appendChild(this.renderer.domElement);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
+    this.controls.addEventListener("start", () => {
+      this.autoFit = false;
+      this.pendingFit = false;
+    });
 
     // Official three.js editor-style XYZ orientation gizmo (top-right).
     this.viewHelperVisible = options.viewHelper !== false;
@@ -383,8 +400,13 @@ export class EmbedViewer {
     if (result.warnings.length) this.onWarnings?.(result.warnings);
     this.viewer.fromResult(result, this.mode, this.svgText);
     if (options.fitCamera !== false) {
+      this.autoFit = true;
       // Returns false on empty scene; still resets camera to a safe iso.
-      this.viewer.fitCamera(this.camera, this.controls);
+      const framed = this.viewer.fitCamera(this.camera, this.controls);
+      const w = this.canvasWrap.clientWidth;
+      const h = this.canvasWrap.clientHeight;
+      // Fit before layout settles uses a wrong aspect — redo on next good resize.
+      this.pendingFit = framed && (w < 32 || h < 32);
     }
     this.syncParamsUi(result);
     this.syncModelBar(result);
@@ -425,11 +447,25 @@ export class EmbedViewer {
   private resize(): void {
     const w = this.canvasWrap.clientWidth || 1;
     const h = this.canvasWrap.clientHeight || 1;
-    if (w === this.lastCssSize.w && h === this.lastCssSize.h) return;
+    const prev = this.lastCssSize;
+    const sizeUnchanged = w === prev.w && h === prev.h;
+    if (sizeUnchanged) {
+      if (this.pendingFit && w >= 32 && h >= 32) {
+        this.pendingFit = false;
+        this.viewer.fitCamera(this.camera, this.controls);
+        this.paint();
+      }
+      return;
+    }
+    const prevAspect = prev.w > 0 && prev.h > 0 ? prev.w / prev.h : 0;
+    const nextAspect = w / h;
+    const aspectDelta =
+      prevAspect > 0 ? Math.abs(nextAspect - prevAspect) / prevAspect : 1;
     this.lastCssSize = { w, h };
     const pr = this.renderer.getPixelRatio();
-    this.camera.aspect = w / h;
+    this.camera.aspect = nextAspect;
     this.camera.updateProjectionMatrix();
+    // false: CSS already 100%; only update drawing buffer.
     this.renderer.setSize(w, h, false);
     this.composer.setPixelRatio(pr);
     this.composer.setSize(w, h);
@@ -437,11 +473,22 @@ export class EmbedViewer {
       1 / (w * pr),
       1 / (h * pr)
     );
+    const shouldRefit =
+      (this.pendingFit && w >= 32 && h >= 32) ||
+      (this.autoFit && w >= 32 && h >= 32 && aspectDelta > 0.08);
+    if (shouldRefit) {
+      this.pendingFit = false;
+      this.viewer.fitCamera(this.camera, this.controls);
+    }
     // Buffer/targets were reallocated and cleared; redraw before the browser paints.
     this.paint();
   }
 
   private paint(): void {
+    // Ensure full-canvas viewport after ViewHelper (or any pass) may have changed it.
+    const el = this.renderer.domElement;
+    this.renderer.setViewport(0, 0, el.clientWidth || 1, el.clientHeight || 1);
+    this.renderer.setScissorTest(false);
     this.composer.render();
     if (this.viewHelperVisible) {
       this.viewHelper.render(this.renderer);

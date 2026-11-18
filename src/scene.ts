@@ -100,6 +100,7 @@ export class Svg3dxViewer {
     camera: THREE.PerspectiveCamera,
     controls?: { target: THREE.Vector3; update: () => void }
   ): boolean {
+    this.root.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(this.root);
     camera.up.copy(WORLD_UP);
     if (box.isEmpty()) {
@@ -123,13 +124,20 @@ export class Svg3dxViewer {
     }
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z) || 1;
-    const dist = maxDim * 1.8;
+    // Sphere covering the AABB — more stable than maxDim for iso framing.
+    const radius = Math.max(size.length() * 0.5, 1e-3);
+    const fov = THREE.MathUtils.degToRad(camera.fov);
+    const aspect = Math.max(camera.aspect || 1, 1e-4);
+    // Fit sphere in both vertical and horizontal FOV (account for canvas aspect).
+    const fitH = radius / Math.tan(fov / 2);
+    const fitW = radius / (Math.tan(fov / 2) * aspect);
+    const dist = Math.max(fitH, fitW) * 1.35;
     // Default iso: viewDir (−1,+1,−1) → eye along (+1,−1,+1)
+    const eye = DEFAULT_EYE_OFFSET.clone().normalize();
     camera.position.set(
-      center.x + DEFAULT_EYE_OFFSET.x * dist,
-      center.y + DEFAULT_EYE_OFFSET.y * dist,
-      center.z + DEFAULT_EYE_OFFSET.z * dist
+      center.x + eye.x * dist,
+      center.y + eye.y * dist,
+      center.z + eye.z * dist
     );
     camera.near = Math.max(0.1, dist / 100);
     camera.far = dist * 100;
