@@ -37,6 +37,7 @@ export { Svg3dxViewer } from "./scene.js";
 export { buildThreeObject } from "./primitive.js";
 export { resolveActiveModel } from "./model.js";
 export { createViewer, EmbedViewer } from "./createViewer.js";
+export { PlaneHelper } from "./PlaneHelper.js";
 export { buildSvg2dObjects, getDefaultSvg2dFont } from "./svg2d.js";
 export {
   isSvg3dxDocument,

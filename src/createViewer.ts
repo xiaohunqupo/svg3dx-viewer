@@ -38,12 +38,20 @@ import {
 } from "./selectionStyle.js";
 import { initWasm, parseSvg, type ParamMap } from "./wasm.js";
 import type { EvaluationResult } from "./types.js";
+import { PlaneHelper } from "./PlaneHelper.js";
 
 // Before any Object3D / lookAt / controls: svg3dx Z-up.
 applyWorldUp();
 
 const PICK_DRAG_PX = 5;
 const AXES_UNIT = 1;
+/** Unit size for PlaneHelper before screen-based scaling. */
+const PLANE_UNIT = 10;
+const PLANE_COLOR = 0xc5ced8;
+/** Plane edge length as a fraction of the shorter viewport side (world units). */
+const PLANE_SCREEN_FRACTION = 0.55;
+/** AxesHelper length vs plane half-extent (>1 → tips past the plane edge). */
+const AXES_OVER_PLANE_HALF = 1.15;
 
 export interface CreateViewerOptions {
   /** Mount param panel into this element (optional). */
@@ -93,10 +101,17 @@ export interface CreateViewerOptions {
    */
   viewHelperClick?: boolean;
   /**
-   * Show world-origin XYZ axes in the scene (default true).
-   * Lives outside the svg3dx root so document reloads do not dispose it.
+   * Show world-origin XYZ axes via official `THREE.AxesHelper` (default true).
+   * Length is slightly longer than the PlaneHelper half-extent.
    */
   axesHelper?: boolean;
+  /**
+   * Show world XY reference plane (`PlaneHelper`: outer frame + fill, default true).
+   * Alias: `gridHelper`.
+   */
+  planeHelper?: boolean;
+  /** @deprecated Use `planeHelper`. */
+  gridHelper?: boolean;
 }
 
 /**
@@ -127,6 +142,8 @@ export class EmbedViewer {
   readonly viewHelperVisible: boolean;
   /** Whether the world-origin XYZ axes are shown. */
   readonly axesHelperVisible: boolean;
+  /** Whether the world XY PlaneHelper is shown. */
+  readonly planeHelperVisible: boolean;
 
   private stage: HTMLElement;
   private canvasWrap: HTMLElement;
@@ -164,6 +181,7 @@ export class EmbedViewer {
   private outlinePass: OutlinePass;
   private fxaaPass: ShaderPass;
   private axesHelper: THREE.AxesHelper | null = null;
+  private planeHelper: PlaneHelper | null = null;
   private outlineOverlayReady = false;
   /**
    * Scenes drawn after EffectComposer (e.g. TransformControls). Kept out of
@@ -302,11 +320,59 @@ export class EmbedViewer {
     fill.position.set(-DEFAULT_EYE_OFFSET.x, -DEFAULT_EYE_OFFSET.y, DEFAULT_EYE_OFFSET.z).normalize().multiplyScalar(4);
     this.scene.add(fill);
 
+    const wantPlane =
+      (options.planeHelper ?? options.gridHelper) !== false;
+    this.planeHelperVisible = wantPlane;
     this.axesHelperVisible = options.axesHelper !== false;
+
+    // Drop HMR leftovers (old grid / plane / axes names).
+    for (const child of [...this.scene.children]) {
+      if (
+        child.name !== "svg3dx-world-axes" &&
+        child.name !== "svg3dx-world-plane" &&
+        child.name !== "svg3dx-world-grid" &&
+        child.name !== "svg3dx-world-grid-xy" &&
+        child.name !== "svg3dx-world-grid-z"
+      ) {
+        continue;
+      }
+      this.scene.remove(child);
+      child.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (mesh.isMesh) {
+          mesh.geometry.dispose();
+          const mat = mesh.material;
+          if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+          else mat.dispose();
+          return;
+        }
+        const line = obj as THREE.Line;
+        if (line.isLine) {
+          line.geometry.dispose();
+          const mat = line.material;
+          if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+          else mat.dispose();
+        }
+      });
+    }
+
+    if (this.planeHelperVisible) {
+      this.planeHelper = new PlaneHelper(PLANE_UNIT, PLANE_COLOR);
+      this.scene.add(this.planeHelper);
+    }
+
     if (this.axesHelperVisible) {
       this.axesHelper = new THREE.AxesHelper(AXES_UNIT);
       this.axesHelper.name = "svg3dx-world-axes";
-      // Keep outside Svg3dxViewer.root so document reloads do not dispose it.
+      // Draw above the plane fill/border.
+      this.axesHelper.renderOrder = 1;
+      const axesMats = Array.isArray(this.axesHelper.material)
+        ? this.axesHelper.material
+        : [this.axesHelper.material];
+      for (const m of axesMats) {
+        m.transparent = true;
+        m.depthWrite = false;
+      }
       this.scene.add(this.axesHelper);
     }
 
@@ -386,6 +452,8 @@ export class EmbedViewer {
       } else {
         this.controls.update();
       }
+      // Keep plane/axes at a stable screen fraction while orbiting/zooming.
+      this.syncWorldHelpersSize();
       this.paint();
       this.raf = requestAnimationFrame(tick);
     };
@@ -577,7 +645,7 @@ export class EmbedViewer {
       // Always pass markup so ordinary SVG tags become XY-plane primitives.
       this.svgText
     );
-    this.syncAxesHelperSize();
+    this.syncWorldHelpersSize();
     this.syncKernelHost();
     this.syncChromeForDocument(result);
     if (options.fitCamera !== false) {
@@ -757,16 +825,31 @@ export class EmbedViewer {
     }
   }
 
-  /** Scale world axes from content bounds (no-op when axes are disabled). */
-  private syncAxesHelperSize(): void {
-    if (!this.axesHelper) return;
-    this.viewer.root.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(this.viewer.root);
-    let len = 10;
-    if (!box.isEmpty()) {
-      len = Math.max(box.getSize(new THREE.Vector3()).length() * 0.2, 1);
+  /**
+   * Scale PlaneHelper + AxesHelper to a fixed fraction of the viewport
+   * (shorter screen side), at the current camera↔target distance.
+   */
+  private syncWorldHelpersSize(): void {
+    if (!this.planeHelper && !this.axesHelper) return;
+    const planeSize = this.screenHelperPlaneSize();
+    if (this.planeHelper) {
+      this.planeHelper.scale.setScalar(planeSize / PLANE_UNIT);
     }
-    this.axesHelper.scale.setScalar(len / AXES_UNIT);
+    if (this.axesHelper) {
+      const axesLen = (planeSize / 2) * AXES_OVER_PLANE_HALF;
+      this.axesHelper.scale.setScalar(axesLen / AXES_UNIT);
+    }
+  }
+
+  /** World-unit plane edge length ≈ `PLANE_SCREEN_FRACTION` of the shorter view side. */
+  private screenHelperPlaneSize(): number {
+    // Helpers sit at the world origin — size from eye distance to origin.
+    const dist = Math.max(this.camera.position.length(), 1e-4);
+    const vFov = THREE.MathUtils.degToRad(this.camera.fov);
+    const viewH = 2 * dist * Math.tan(vFov * 0.5);
+    const viewW = viewH * Math.max(this.camera.aspect, 1e-4);
+    const shorter = Math.min(viewW, viewH);
+    return Math.max(shorter * PLANE_SCREEN_FRACTION, 1e-3);
   }
 
   dispose(): void {
@@ -796,6 +879,11 @@ export class EmbedViewer {
       if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
       else mat.dispose();
       this.axesHelper = null;
+    }
+    if (this.planeHelper) {
+      this.scene.remove(this.planeHelper);
+      this.planeHelper.dispose();
+      this.planeHelper = null;
     }
     const ro = (this as unknown as { _ro?: ResizeObserver })._ro;
     ro?.disconnect();
