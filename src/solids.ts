@@ -205,8 +205,10 @@ export function buildRevolveGeometry(
     origin?: THREE.Vector3;
     normal?: THREE.Vector3;
     xDir?: THREE.Vector3;
-  }
+  },
+  solidRaw?: Value | undefined
 ): THREE.BufferGeometry | null {
+  const solid = solidRaw === false || solidRaw === "false" ? false : true;
   const poly = sectionToPolyline3D(sectionVal, parentPose, { forceClosed: false });
   if (!poly || poly.points.length < 2) return null;
   let pts = poly.points;
@@ -326,7 +328,7 @@ export function buildRevolveGeometry(
   side.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
   side.setIndex(indices);
 
-  if (full || !closed) return side;
+  if (!solid || full || !closed) return side;
 
   const caps = new FlatMeshBuilder();
   const ringAt = (col: number): THREE.Vector3[] => {

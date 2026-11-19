@@ -161,6 +161,15 @@ export class EmbedViewer {
   /** Whether the world XY PlaneHelper is shown. */
   planeHelperVisible: boolean;
 
+  /**
+   * Place axes + plane on `source`'s world origin and orientation.
+   * Pass `null` to return them to the world origin.
+   */
+  setHelperFrame(source: THREE.Object3D | null): void {
+    this.helperFrame = source;
+    this.syncHelperFrame();
+  }
+
   private stage: HTMLElement;
   private canvasWrap: HTMLElement;
   private kernelHost: HTMLElement;
@@ -205,6 +214,15 @@ export class EmbedViewer {
   private fxaaPass: ShaderPass;
   private axesHelper: THREE.AxesHelper | null = null;
   private planeHelper: PlaneHelper | null = null;
+  /**
+   * When set, axes + plane copy this object's world origin and orientation
+   * (parent frame while the editor drills into a child). Null = world origin.
+   */
+  private helperFrame: THREE.Object3D | null = null;
+  private readonly helperAnchor = new THREE.Vector3();
+  private readonly helperPos = new THREE.Vector3();
+  private readonly helperQuat = new THREE.Quaternion();
+  private readonly helperScale = new THREE.Vector3();
   private outlineOverlayReady = false;
   /**
    * Scenes drawn after EffectComposer (e.g. TransformControls). Kept out of
@@ -966,11 +984,12 @@ export class EmbedViewer {
 
   /**
    * Scale PlaneHelper + AxesHelper to a fixed fraction of the viewport
-   * (shorter screen side), at the current camera↔target distance.
+   * (shorter screen side), at the current camera↔helper distance.
    */
   private syncWorldHelpersSize(): void {
     if (!this.planeHelperVisible && !this.axesHelperVisible) return;
     if (!this.planeHelper && !this.axesHelper) return;
+    this.syncHelperFrame();
     const planeSize = this.screenHelperPlaneSize();
     if (this.planeHelper) {
       this.planeHelper.scale.setScalar(planeSize / PLANE_UNIT);
@@ -981,10 +1000,36 @@ export class EmbedViewer {
     }
   }
 
+  /** Copy the active frame onto axes + plane. Null frame stays at the world origin. */
+  private syncHelperFrame(): void {
+    const src = this.helperFrame;
+    if (!src) {
+      this.helperAnchor.set(0, 0, 0);
+      this.axesHelper?.position.set(0, 0, 0);
+      this.axesHelper?.quaternion.identity();
+      this.planeHelper?.position.set(0, 0, 0);
+      this.planeHelper?.quaternion.identity();
+      return;
+    }
+    src.updateWorldMatrix(true, false);
+    src.matrixWorld.decompose(this.helperPos, this.helperQuat, this.helperScale);
+    this.helperAnchor.copy(this.helperPos);
+    if (this.axesHelper) {
+      this.axesHelper.position.copy(this.helperPos);
+      this.axesHelper.quaternion.copy(this.helperQuat);
+    }
+    if (this.planeHelper) {
+      this.planeHelper.position.copy(this.helperPos);
+      this.planeHelper.quaternion.copy(this.helperQuat);
+    }
+  }
+
   /** World-unit plane edge length ≈ `PLANE_SCREEN_FRACTION` of the shorter view side. */
   private screenHelperPlaneSize(): number {
-    // Helpers sit at the world origin — size from eye distance to origin.
-    const dist = Math.max(this.camera.position.length(), 1e-4);
+    const dist = Math.max(
+      this.camera.position.distanceTo(this.helperAnchor),
+      1e-4
+    );
     const vFov = THREE.MathUtils.degToRad(this.camera.fov);
     const viewH = 2 * dist * Math.tan(vFov * 0.5);
     const viewW = viewH * Math.max(this.camera.aspect, 1e-4);

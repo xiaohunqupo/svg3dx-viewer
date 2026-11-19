@@ -52,17 +52,43 @@ export class SelectionHighlight {
     root.traverse((obj) => {
       const data = getPickData(obj);
       if (!data || !matchesHighlight(data, path)) return;
-      const mesh = obj as Mesh;
-      if (mesh.isMesh) {
-        selected.push(mesh);
-        return;
-      }
-      const line = obj as Line & { isLine?: boolean; isLineSegments?: boolean };
-      if (line.isLine && !line.isLineSegments) {
-        this.highlightLine(line);
-      }
+      this.collectHighlight(obj, selected);
     });
     this.apply(selected);
+  }
+
+  /**
+   * Outline `node` and the geometry under it only.
+   * Used when a defs path is instanced more than once and the pick must stay
+   * on the use that was actually hit.
+   */
+  setSubtree(node: Object3D, path: string | null | undefined): void {
+    this.restoreLines();
+    this.path = path || null;
+    const selected: Object3D[] = [];
+    node.traverse((obj) => this.collectHighlight(obj, selected));
+    this.apply(selected);
+  }
+
+  /** Outline these objects only (already filtered to one instance). */
+  setObjects(objects: readonly Object3D[], path: string | null | undefined): void {
+    this.restoreLines();
+    this.path = path || null;
+    const selected: Object3D[] = [];
+    for (const obj of objects) this.collectHighlight(obj, selected);
+    this.apply(selected);
+  }
+
+  private collectHighlight(obj: Object3D, selected: Object3D[]): void {
+    const mesh = obj as Mesh;
+    if (mesh.isMesh) {
+      selected.push(mesh);
+      return;
+    }
+    const line = obj as Line & { isLine?: boolean; isLineSegments?: boolean };
+    if (line.isLine && !line.isLineSegments) {
+      this.highlightLine(line);
+    }
   }
 
   private highlightLine(line: Line): void {

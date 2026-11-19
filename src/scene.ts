@@ -14,12 +14,19 @@ export interface FitCameraOptions {
    * Use `TOP_EYE_OFFSET` for the ViewHelper +Z (top-down) home.
    */
   eyeOffset?: THREE.Vector3;
+  /** Frame this object instead of the whole scene root. */
+  object?: THREE.Object3D;
 }
 
 /** Low-level scene binder: EvaluationResult → THREE objects. */
 export class Svg3dxViewer {
   readonly scene: THREE.Scene;
   readonly root: THREE.Group;
+  /**
+   * With a model active, also keep each defs group — hidden — at that group's
+   * own transform, so an editor can show the definition in world space.
+   */
+  includeDefsWorld = false;
 
   constructor(scene?: THREE.Scene) {
     this.scene = scene ?? new THREE.Scene();
@@ -38,8 +45,9 @@ export class Svg3dxViewer {
 
   /**
    * Bind evaluated geometry into the scene.
-   * When a model is active, only its `<s3dx:use>` references are shown
-   * (each with that use's `s3dx:transform`) — not every defs group.
+   * When a model is active, its `<s3dx:use>` references are shown
+   * (each with that use's `s3dx:transform`). With `includeDefsWorld`, each
+   * defs group is also kept hidden at the group's own transform.
    * Ordinary SVG 2D tags (text/rect/…) become XY-plane primitives when `svgText` is set.
    */
   fromResult(
@@ -84,6 +92,16 @@ export class Svg3dxViewer {
         }
         this.root.add(obj);
       }
+      if (this.includeDefsWorld) {
+        for (const [id, src] of groupsById) {
+          const obj = buildThreeObject(src, mode, `defs:${id}`, library);
+          if (!obj) continue;
+          obj.name = `defs-world:${id}`;
+          obj.visible = false;
+          obj.userData.defsWorld = id;
+          this.root.add(obj);
+        }
+      }
     } else {
       for (const inst of result.instructions) {
         const path =
@@ -109,8 +127,10 @@ export class Svg3dxViewer {
     controls?: { target: THREE.Vector3; update: () => void },
     options: FitCameraOptions = {}
   ): boolean {
-    this.root.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(this.root);
+    const target = options.object ?? this.root;
+    target.updateMatrixWorld(true);
+    const box = new THREE.Box3();
+    expandVisibleBounds(box, target);
     const eye = (options.eyeOffset ?? DEFAULT_EYE_OFFSET).clone().normalize();
     // Always Z-up so OrbitControls orbits around world +Z (CAD-style).
     camera.up.copy(WORLD_UP);
@@ -155,6 +175,22 @@ export class Svg3dxViewer {
     }
     return true;
   }
+}
+
+const _fitBox = new THREE.Box3();
+
+/** Bounds of `object` and its visible descendants. Hidden branches are left out. */
+function expandVisibleBounds(box: THREE.Box3, object: THREE.Object3D): void {
+  if (!object.visible) return;
+  const geometry = (object as THREE.Mesh).geometry;
+  if (geometry) {
+    if (!geometry.boundingBox) geometry.computeBoundingBox();
+    if (geometry.boundingBox && !geometry.boundingBox.isEmpty()) {
+      _fitBox.copy(geometry.boundingBox).applyMatrix4(object.matrixWorld);
+      box.union(_fitBox);
+    }
+  }
+  for (const child of object.children) expandVisibleBounds(box, child);
 }
 
 function disposeObject(obj: THREE.Object3D): void {

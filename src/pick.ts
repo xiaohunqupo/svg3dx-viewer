@@ -54,7 +54,9 @@ export function remapAsModelUse(
     setPickData(c, {
       treePath: usePath,
       defsPath,
-      groupId,
+      // Keep a nested use's own group id so a hit can be mapped back to that
+      // definition. The model-use root is already tagged with `groupId`.
+      groupId: prev?.groupId ?? groupId,
       nodeId: prev?.nodeId,
     });
   });

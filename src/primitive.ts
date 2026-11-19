@@ -2,7 +2,7 @@ import * as THREE from "three";
 import type { GeometryInstruction, Value } from "./types.js";
 import { mat4x3ToMatrix4 } from "./transform.js";
 import { buildBoolOp } from "./bool.js";
-import { setPickData } from "./pick.js";
+import { getPickData, setPickData } from "./pick.js";
 import { buildPipeGeometry, buildSweepGeometry } from "./sweep.js";
 import {
   buildArcGeometry,
@@ -170,8 +170,11 @@ export function buildThreeObject(
         const obj = buildThreeObject(child, mode, childPath, library);
         if (obj) {
           if (childPath) {
+            const ownGroup = getPickData(obj)?.groupId;
             tagObject(obj, childPath, {
-              groupId: inst.id ?? undefined,
+              // An inlined use already carries the target group id. Do not
+              // replace it with the parent group's id — that hides the use.
+              groupId: ownGroup ?? inst.id ?? undefined,
               nodeId: child.node_id,
             });
           }
@@ -389,7 +392,8 @@ export function buildPrimitive(
           vec3(param(params, "axisOrigin")),
           vec3(param(params, "axisDir"), [0, 0, 1]),
           num(param(params, "angle"), 360),
-          { origin, normal, xDir }
+          { origin, normal, xDir },
+          param(params, "solid")
         );
       }
       if (!geometry) return null;
