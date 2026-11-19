@@ -29,6 +29,13 @@ import {
   isSvg3dxDocument,
 } from "./documentKind.js";
 import { extractStyleParams, listParams } from "./params.js";
+import {
+  OUTLINE_OVERLAY_FS_ALPHA,
+  SELECTION_EDGE,
+  SELECTION_EDGE_HIDDEN,
+  SELECTION_OUTLINE_TUNING,
+  applySelectionEdgeColors,
+} from "./selectionStyle.js";
 import { initWasm, parseSvg, type ParamMap } from "./wasm.js";
 import type { EvaluationResult } from "./types.js";
 
@@ -157,6 +164,7 @@ export class EmbedViewer {
   private outlinePass: OutlinePass;
   private fxaaPass: ShaderPass;
   private axesHelper: THREE.AxesHelper | null = null;
+  private outlineOverlayReady = false;
 
   constructor(container: HTMLElement, options: CreateViewerOptions = {}) {
     this.container = container;
@@ -241,12 +249,8 @@ export class EmbedViewer {
       this.scene,
       this.camera
     );
-    this.outlinePass.edgeStrength = 4;
-    this.outlinePass.edgeThickness = 1.5;
-    this.outlinePass.edgeGlow = 0.15;
     this.outlinePass.pulsePeriod = 0;
-    this.outlinePass.visibleEdgeColor.set(0xff9a2e);
-    this.outlinePass.hiddenEdgeColor.set(0xb36a10);
+    this.syncSelectionOutline();
     this.composer.addPass(this.outlinePass);
     this.composer.addPass(new OutputPass());
     this.fxaaPass = new ShaderPass(FXAAShader);
@@ -473,6 +477,29 @@ export class EmbedViewer {
     const bg = new THREE.Color(color);
     this.scene.background = bg;
     this.viewHelper.adaptToBackground(bg);
+  }
+
+  /**
+   * Gold selection edge — same NormalBlending + alpha overlay for light and
+   * dark (stock AdditiveBlending washes out on pale page gray).
+   */
+  private syncSelectionOutline(): void {
+    applySelectionEdgeColors();
+    this.outlinePass.visibleEdgeColor.copy(SELECTION_EDGE);
+    this.outlinePass.hiddenEdgeColor.copy(SELECTION_EDGE_HIDDEN);
+    this.outlinePass.edgeStrength = SELECTION_OUTLINE_TUNING.edgeStrength;
+    this.outlinePass.edgeThickness = SELECTION_OUTLINE_TUNING.edgeThickness;
+    this.outlinePass.edgeGlow = SELECTION_OUTLINE_TUNING.edgeGlow;
+
+    if (this.outlineOverlayReady) return;
+    const mat = this.outlinePass.overlayMaterial;
+    mat.blending = THREE.NormalBlending;
+    mat.fragmentShader = OUTLINE_OVERLAY_FS_ALPHA;
+    mat.transparent = true;
+    mat.depthTest = false;
+    mat.depthWrite = false;
+    mat.needsUpdate = true;
+    this.outlineOverlayReady = true;
   }
 
   getResult(): EvaluationResult | null {

@@ -1,9 +1,6 @@
 import type { Color, Line, Material, Mesh, Object3D } from "three";
-import { Color as ThreeColor } from "three";
 import { getPickData, matchesHighlight } from "./pick.js";
-
-/** Match `OutlinePass.visibleEdgeColor` in createViewer. */
-const LINE_HIGHLIGHT = new ThreeColor(0xff9a2e);
+import { SELECTION_EDGE } from "./selectionStyle.js";
 
 type LineColorBackup = {
   material: Material & { color?: Color };
@@ -79,7 +76,7 @@ export class SelectionHighlight {
         material: colored,
         color: colored.color.clone(),
       });
-      colored.color.copy(LINE_HIGHLIGHT);
+      colored.color.copy(SELECTION_EDGE);
     }
   }
 
