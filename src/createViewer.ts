@@ -165,6 +165,11 @@ export class EmbedViewer {
   private fxaaPass: ShaderPass;
   private axesHelper: THREE.AxesHelper | null = null;
   private outlineOverlayReady = false;
+  /**
+   * Scenes drawn after EffectComposer (e.g. TransformControls). Kept out of
+   * the main scene so OutlinePass depth / edges do not pick them up.
+   */
+  private overlayScenes: THREE.Scene[] = [];
 
   constructor(container: HTMLElement, options: CreateViewerOptions = {}) {
     this.container = container;
@@ -397,6 +402,20 @@ export class EmbedViewer {
 
   getSelectedObjects(): THREE.Object3D[] {
     return this.outlinePass.selectedObjects;
+  }
+
+  /**
+   * Register a scene rendered after the composer (selection outline).
+   * Use for editor gizmos that must not affect OutlinePass.
+   */
+  addOverlayScene(scene: THREE.Scene): void {
+    if (this.overlayScenes.includes(scene)) return;
+    this.overlayScenes.push(scene);
+  }
+
+  removeOverlayScene(scene: THREE.Scene): void {
+    const i = this.overlayScenes.indexOf(scene);
+    if (i >= 0) this.overlayScenes.splice(i, 1);
   }
 
   async loadSvg(
@@ -723,6 +742,16 @@ export class EmbedViewer {
     this.renderer.setViewport(0, 0, el.clientWidth || 1, el.clientHeight || 1);
     this.renderer.setScissorTest(false);
     this.composer.render();
+    // Overlay gizmos: after outline so they never enter OutlinePass depth/edges.
+    if (this.overlayScenes.length) {
+      const prevAutoClear = this.renderer.autoClear;
+      this.renderer.autoClear = false;
+      for (const overlay of this.overlayScenes) {
+        this.renderer.clearDepth();
+        this.renderer.render(overlay, this.camera);
+      }
+      this.renderer.autoClear = prevAutoClear;
+    }
     if (this.viewHelperVisible) {
       this.viewHelper.render(this.renderer);
     }
