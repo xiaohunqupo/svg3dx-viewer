@@ -19,6 +19,11 @@ import { ParamPanel } from "./ParamPanel.js";
 import { ModelBar } from "./ModelBar.js";
 import { ParamsBar } from "./ParamsBar.js";
 import { DisplayModeBar, type DisplayModeState } from "./DisplayModeBar.js";
+import {
+  SettingsBar,
+  type AntialiasLevel,
+  type ViewerUiState,
+} from "./SettingsBar.js";
 import { ensureChromeStyles } from "./chromeStyles.js";
 import {
   detectViewerLocale,
@@ -85,6 +90,11 @@ export interface CreateViewerOptions {
    */
   displayModeBar?: boolean;
   /**
+   * Show top-left settings gear menu (default true).
+   * The menu can also hide this button itself; restore via `setUiState`.
+   */
+  settingsBar?: boolean;
+  /**
    * Overlay chrome language (`zh` / `en`). Default: browser language.
    * Call `setLocale` later when the host app language changes.
    */
@@ -112,6 +122,11 @@ export interface CreateViewerOptions {
   planeHelper?: boolean;
   /** @deprecated Use `planeHelper`. */
   gridHelper?: boolean;
+  /**
+   * MSAA sample count for the EffectComposer path: 0 | 2 | 4 | 8 (default 4).
+   * 0 disables antialiasing (including FXAA).
+   */
+  antialias?: AntialiasLevel;
 }
 
 /**
@@ -138,12 +153,13 @@ export class EmbedViewer {
   readonly modelBar: ModelBar | null;
   readonly paramsBar: ParamsBar | null;
   readonly displayModeBar: DisplayModeBar | null;
+  readonly settingsBar: SettingsBar | null;
   /** Whether the top-right ViewHelper gizmo is shown. */
-  readonly viewHelperVisible: boolean;
+  viewHelperVisible: boolean;
   /** Whether the world-origin XYZ axes are shown. */
-  readonly axesHelperVisible: boolean;
+  axesHelperVisible: boolean;
   /** Whether the world XY PlaneHelper is shown. */
-  readonly planeHelperVisible: boolean;
+  planeHelperVisible: boolean;
 
   private stage: HTMLElement;
   private canvasWrap: HTMLElement;
@@ -157,7 +173,14 @@ export class EmbedViewer {
   /** True when the loaded document has no `svg3d="true"`. */
   private plainSvg = false;
   private displayModes: DisplayModeState = { kernel: true, svg3dx: true };
+  private uiPrefs: {
+    settingsButton: boolean;
+    modelBar: boolean;
+    paramsBar: boolean;
+  };
+  private antialias: AntialiasLevel = 4;
   private locale: ViewerLocale;
+  private viewHelperClickEnabled = true;
   private raf = 0;
   private resizeRaf = 0;
   /** Re-fit once the canvas has a real size (initial layout often 0×0 / tiny). */
@@ -255,6 +278,8 @@ export class EmbedViewer {
     this.viewHelper.setLabels("X", "Y", "Z");
     this.viewHelper.adaptToBackground(this.scene.background as THREE.Color);
 
+    this.antialias = this.normalizeAntialias(options.antialias ?? 4);
+
     // Selection outline — same stack as three.js `webgl_postprocessing_outline`.
     // MSAA on composer RTs (renderer.antialias alone does not apply through EffectComposer).
     const size = this.renderer.getSize(new THREE.Vector2());
@@ -262,7 +287,7 @@ export class EmbedViewer {
     const composerTarget = new THREE.WebGLRenderTarget(
       Math.max(1, Math.floor(size.width * pr)),
       Math.max(1, Math.floor(size.height * pr)),
-      { type: THREE.HalfFloatType, samples: 4 }
+      { type: THREE.HalfFloatType, samples: this.antialias }
     );
     composerTarget.texture.name = "EffectComposer.rt1";
     this.composer = new EffectComposer(this.renderer, composerTarget);
@@ -278,8 +303,10 @@ export class EmbedViewer {
     this.composer.addPass(new OutputPass());
     this.fxaaPass = new ShaderPass(FXAAShader);
     this.composer.addPass(this.fxaaPass);
+    this.fxaaPass.enabled = false;
 
-    if (this.viewHelperVisible && options.viewHelperClick !== false) {
+    this.viewHelperClickEnabled = options.viewHelperClick !== false;
+    if (this.viewHelperClickEnabled) {
       this.onPointerDown = (event: PointerEvent) => {
         if (event.button !== 0) return;
         this.pointerDown = {
@@ -291,6 +318,7 @@ export class EmbedViewer {
       this.onPointerUp = (event: PointerEvent) => {
         const down = this.pointerDown;
         this.pointerDown = null;
+        if (!this.viewHelperVisible) return;
         if (!down || down.button !== 0 || event.button !== 0) return;
         const dx = event.clientX - down.x;
         const dy = event.clientY - down.y;
@@ -356,25 +384,24 @@ export class EmbedViewer {
       });
     }
 
-    if (this.planeHelperVisible) {
-      this.planeHelper = new PlaneHelper(PLANE_UNIT, PLANE_COLOR);
-      this.scene.add(this.planeHelper);
-    }
+    // Always create helpers so the settings menu can toggle them at runtime.
+    this.planeHelper = new PlaneHelper(PLANE_UNIT, PLANE_COLOR);
+    this.planeHelper.visible = this.planeHelperVisible;
+    this.scene.add(this.planeHelper);
 
-    if (this.axesHelperVisible) {
-      this.axesHelper = new THREE.AxesHelper(AXES_UNIT);
-      this.axesHelper.name = "svg3dx-world-axes";
-      // Draw above the plane fill/border.
-      this.axesHelper.renderOrder = 1;
-      const axesMats = Array.isArray(this.axesHelper.material)
-        ? this.axesHelper.material
-        : [this.axesHelper.material];
-      for (const m of axesMats) {
-        m.transparent = true;
-        m.depthWrite = false;
-      }
-      this.scene.add(this.axesHelper);
+    this.axesHelper = new THREE.AxesHelper(AXES_UNIT);
+    this.axesHelper.name = "svg3dx-world-axes";
+    this.axesHelper.visible = this.axesHelperVisible;
+    // Draw above the plane fill/border.
+    this.axesHelper.renderOrder = 1;
+    const axesMats = Array.isArray(this.axesHelper.material)
+      ? this.axesHelper.material
+      : [this.axesHelper.material];
+    for (const m of axesMats) {
+      m.transparent = true;
+      m.depthWrite = false;
     }
+    this.scene.add(this.axesHelper);
 
     this.viewer = new Svg3dxViewer(this.scene);
 
@@ -387,10 +414,19 @@ export class EmbedViewer {
       ? new ParamPanel(options.paramsEl, { onChange: onParamsEdited })
       : null;
 
-    const wantModelBar = options.modelBar !== false;
-    const wantParamsBar = options.paramsBar !== false;
+    const wantSettingsBar = options.settingsBar !== false;
+    const showModelBar = options.modelBar !== false;
+    const showParamsBar = options.paramsBar !== false;
     const wantDisplayModeBar = options.displayModeBar !== false;
-    if (wantModelBar || wantParamsBar || wantDisplayModeBar) {
+    // Build bars whenever the settings menu can toggle them later.
+    const buildModelBar = showModelBar || wantSettingsBar;
+    const buildParamsBar = showParamsBar || wantSettingsBar;
+    this.uiPrefs = {
+      settingsButton: wantSettingsBar,
+      modelBar: showModelBar,
+      paramsBar: showParamsBar,
+    };
+    if (wantSettingsBar || buildModelBar || buildParamsBar || wantDisplayModeBar) {
       this.leftChrome = document.createElement("div");
       this.leftChrome.className = "svg3dx-left-chrome";
       this.leftChrome.style.cssText = [
@@ -409,18 +445,38 @@ export class EmbedViewer {
       container.appendChild(this.leftChrome);
     }
 
+    // Settings first (top-left), then model / params / display mode below.
+    this.settingsBar = wantSettingsBar
+      ? new SettingsBar(this.leftChrome!, {
+          locale: this.locale,
+          initial: {
+            settingsButton: true,
+            modelBar: showModelBar,
+            paramsBar: showParamsBar,
+            viewHelper: this.viewHelperVisible,
+            axesHelper: this.axesHelperVisible,
+            planeHelper: this.planeHelperVisible,
+            antialias: this.antialias,
+            kernel: this.displayModes.kernel,
+            svg3dx: this.displayModes.svg3dx,
+          },
+          onChange: (state) => this.applyUiState(state),
+        })
+      : null;
+
     this.displayModeBar = wantDisplayModeBar
       ? new DisplayModeBar(this.leftChrome!, {
           initial: this.displayModes,
           locale: this.locale,
           onChange: (state) => {
             this.displayModes = state;
+            this.settingsBar?.setState(state);
             this.applyDisplayLayout();
           },
         })
       : null;
 
-    this.modelBar = wantModelBar
+    this.modelBar = buildModelBar
       ? new ModelBar(this.leftChrome!, {
           locale: this.locale,
           onChange: (id) => {
@@ -429,13 +485,15 @@ export class EmbedViewer {
           },
         })
       : null;
+    this.modelBar?.setVisible(showModelBar);
 
-    this.paramsBar = wantParamsBar
+    this.paramsBar = buildParamsBar
       ? new ParamsBar(this.leftChrome!, {
           locale: this.locale,
           onChange: onParamsEdited,
         })
       : null;
+    this.paramsBar?.setVisible(showParamsBar);
 
     const ro = new ResizeObserver(() => this.scheduleResize());
     ro.observe(this.canvasWrap);
@@ -608,7 +666,36 @@ export class EmbedViewer {
       svg3dx: state.svg3dx ?? this.displayModes.svg3dx,
     };
     this.displayModeBar?.setState(this.displayModes);
+    this.settingsBar?.setState(this.displayModes);
     this.applyDisplayLayout();
+  }
+
+  getUiState(): ViewerUiState {
+    return {
+      settingsButton: this.uiPrefs.settingsButton,
+      modelBar: this.uiPrefs.modelBar,
+      paramsBar: this.uiPrefs.paramsBar,
+      viewHelper: this.viewHelperVisible,
+      axesHelper: this.axesHelperVisible,
+      planeHelper: this.planeHelperVisible,
+      antialias: this.antialias,
+      kernel: this.displayModes.kernel,
+      svg3dx: this.displayModes.svg3dx,
+    };
+  }
+
+  /** Update overlay / helper / antialias preferences (settings menu + host API). */
+  setUiState(partial: Partial<ViewerUiState>): void {
+    this.applyUiState({ ...this.getUiState(), ...partial });
+    this.settingsBar?.setState(partial);
+  }
+
+  getAntialias(): AntialiasLevel {
+    return this.antialias;
+  }
+
+  setAntialias(level: AntialiasLevel): void {
+    this.setUiState({ antialias: level });
   }
 
   getLocale(): ViewerLocale {
@@ -621,6 +708,58 @@ export class EmbedViewer {
     this.displayModeBar?.setLocale(locale);
     this.modelBar?.setLocale(locale);
     this.paramsBar?.setLocale(locale);
+    this.settingsBar?.setLocale(locale);
+  }
+
+  private applyUiState(state: ViewerUiState): void {
+    this.uiPrefs.settingsButton = state.settingsButton;
+    this.uiPrefs.modelBar = state.modelBar;
+    this.uiPrefs.paramsBar = state.paramsBar;
+
+    this.viewHelperVisible = state.viewHelper;
+    this.axesHelperVisible = state.axesHelper;
+    this.planeHelperVisible = state.planeHelper;
+    if (this.axesHelper) this.axesHelper.visible = state.axesHelper;
+    if (this.planeHelper) this.planeHelper.visible = state.planeHelper;
+
+    this.modelBar?.setVisible(state.modelBar);
+    this.paramsBar?.setVisible(state.paramsBar);
+
+    const aa = this.normalizeAntialias(state.antialias);
+    if (aa !== this.antialias) {
+      this.antialias = aa;
+      this.applyAntialiasSamples(aa);
+    }
+
+    const modesChanged =
+      state.kernel !== this.displayModes.kernel ||
+      state.svg3dx !== this.displayModes.svg3dx;
+    if (modesChanged) {
+      this.displayModes = { kernel: state.kernel, svg3dx: state.svg3dx };
+      this.displayModeBar?.setState(this.displayModes);
+      this.applyDisplayLayout();
+    }
+  }
+
+  private normalizeAntialias(level: number): AntialiasLevel {
+    if (level === 2 || level === 4 || level === 8) return level;
+    return 0;
+  }
+
+  private applyAntialiasSamples(samples: AntialiasLevel): void {
+    const apply = (rt: THREE.WebGLRenderTarget | null | undefined) => {
+      if (!rt) return;
+      rt.samples = samples;
+    };
+    apply(this.composer.renderTarget1);
+    apply(this.composer.renderTarget2);
+    const w = this.canvasWrap.clientWidth || 1;
+    const h = this.canvasWrap.clientHeight || 1;
+    const pr = this.renderer.getPixelRatio();
+    this.composer.setPixelRatio(pr);
+    this.composer.setSize(w, h);
+    this.fxaaPass.enabled = false;
+    this.paint();
   }
 
   private async reload(
@@ -689,12 +828,12 @@ export class EmbedViewer {
 
   private syncChromeForDocument(result: EvaluationResult | null): void {
     this.displayModeBar?.setVisible(this.plainSvg);
+    this.settingsBar?.setShowDisplayModes(this.plainSvg);
+    this.paramsBar?.setDocumentAllowed(!this.plainSvg);
     if (this.plainSvg) {
-      if (this.paramsBar) this.paramsBar.el.style.display = "none";
       this.syncModelBar(result);
       return;
     }
-    if (this.paramsBar) this.paramsBar.el.style.display = "flex";
     this.syncParamsUi(result);
     this.syncModelBar(result);
   }
@@ -830,6 +969,7 @@ export class EmbedViewer {
    * (shorter screen side), at the current camera↔target distance.
    */
   private syncWorldHelpersSize(): void {
+    if (!this.planeHelperVisible && !this.axesHelperVisible) return;
     if (!this.planeHelper && !this.axesHelper) return;
     const planeSize = this.screenHelperPlaneSize();
     if (this.planeHelper) {
@@ -887,6 +1027,7 @@ export class EmbedViewer {
     }
     const ro = (this as unknown as { _ro?: ResizeObserver })._ro;
     ro?.disconnect();
+    this.settingsBar?.dispose();
     this.displayModeBar?.dispose();
     this.paramsBar?.dispose();
     this.modelBar?.dispose();

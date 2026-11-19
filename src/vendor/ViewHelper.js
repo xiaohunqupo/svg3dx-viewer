@@ -111,6 +111,9 @@ class ViewHelper extends Object3D {
 		let animElapsed = 0;
 		const animMaxSeconds = 2;
 
+		/** Extra CSS px reserved above the gizmo (e.g. settings gear). */
+		this.marginTop = 0;
+
 		this.render = function ( renderer ) {
 
 			this.quaternion.copy( camera.quaternion ).invert();
@@ -122,8 +125,9 @@ class ViewHelper extends Object3D {
 			//
 
 			// Top-right corner (WebGL y grows upward from the canvas bottom).
+			const marginTop = Math.max( 0, this.marginTop || 0 );
 			const x = domElement.offsetWidth - dim;
-			const y = domElement.offsetHeight - dim;
+			const y = domElement.offsetHeight - dim - marginTop;
 
 			renderer.clearDepth();
 
@@ -148,8 +152,9 @@ class ViewHelper extends Object3D {
 
 			const rect = domElement.getBoundingClientRect();
 			// Must match render(): top-right CSS panel (stock three.js uses bottom-right).
+			const marginTop = Math.max( 0, this.marginTop || 0 );
 			const offsetX = rect.left + ( domElement.offsetWidth - dim );
-			const offsetY = rect.top;
+			const offsetY = rect.top + marginTop;
 			mouse.x = ( ( event.clientX - offsetX ) / dim ) * 2 - 1;
 			mouse.y = - ( ( event.clientY - offsetY ) / dim ) * 2 + 1;
 

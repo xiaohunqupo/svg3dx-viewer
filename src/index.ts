@@ -20,6 +20,10 @@ export type { ParamDesc } from "./params.js";
 export type { CreateViewerOptions } from "./createViewer.js";
 export type { Svg3dxPickData } from "./pick.js";
 export type { DisplayModeState } from "./DisplayModeBar.js";
+export type {
+  AntialiasLevel,
+  ViewerUiState,
+} from "./SettingsBar.js";
 export type { FitCameraOptions } from "./scene.js";
 export type { ViewerLocale, ChromeStrings } from "./chromeLocale.js";
 
@@ -29,6 +33,7 @@ export { ParamPanel } from "./ParamPanel.js";
 export { ModelBar } from "./ModelBar.js";
 export { ParamsBar } from "./ParamsBar.js";
 export { DisplayModeBar } from "./DisplayModeBar.js";
+export { SettingsBar } from "./SettingsBar.js";
 export {
   chromeStrings,
   detectViewerLocale,

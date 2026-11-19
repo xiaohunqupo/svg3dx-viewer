@@ -18,6 +18,8 @@ export class ModelBar {
   private onChange?: (modelId: string) => void;
   private suppress = false;
   private locale: ViewerLocale;
+  private userVisible = true;
+  private hasModels = false;
 
   constructor(parent: HTMLElement, options: ModelBarOptions = {}) {
     this.onChange = options.onChange;
@@ -30,7 +32,7 @@ export class ModelBar {
       "display:none",
       "align-items:center",
       "gap:6px",
-      "padding:4px 8px",
+      "padding:0",
       "pointer-events:auto",
       "user-select:none",
       "align-self:flex-start",
@@ -80,8 +82,9 @@ export class ModelBar {
     this.suppress = true;
     try {
       this.select.replaceChildren();
+      this.hasModels = models.length > 0;
       if (!models.length) {
-        this.el.style.display = "none";
+        this.applyVisibility();
         return;
       }
 
@@ -96,7 +99,7 @@ export class ModelBar {
       const next =
         activeId && ids.has(activeId) ? activeId : models[0]!.id;
       this.select.value = next;
-      this.el.style.display = "flex";
+      this.applyVisibility();
     } finally {
       this.suppress = false;
     }
@@ -106,7 +109,17 @@ export class ModelBar {
     return this.select.value || null;
   }
 
+  /** User/host visibility preference (still hidden when there are no models). */
+  setVisible(visible: boolean): void {
+    this.userVisible = visible;
+    this.applyVisibility();
+  }
+
   dispose(): void {
     this.el.remove();
+  }
+
+  private applyVisibility(): void {
+    this.el.style.display = this.userVisible && this.hasModels ? "flex" : "none";
   }
 }

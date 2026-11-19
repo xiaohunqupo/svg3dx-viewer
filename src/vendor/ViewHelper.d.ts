@@ -4,6 +4,8 @@ export class ViewHelper extends Object3D {
   constructor(camera: Camera, domElement: HTMLElement);
   animating: boolean;
   center: Vector3;
+  /** Extra CSS px reserved above the gizmo (e.g. settings gear). */
+  marginTop: number;
   render(renderer: WebGLRenderer): void;
   handleClick(event: PointerEvent): boolean;
   setLabels(labelX?: string, labelY?: string, labelZ?: string): void;

@@ -30,6 +30,8 @@ export class ParamsBar {
   private expanded: boolean;
   private hasParams = false;
   private locale: ViewerLocale;
+  private userVisible = true;
+  private documentAllowed = true;
 
   constructor(parent: HTMLElement, options: ParamsBarOptions = {}) {
     this.onChange = options.onChange;
@@ -115,6 +117,26 @@ export class ParamsBar {
 
   isExpanded(): boolean {
     return this.expanded;
+  }
+
+  /**
+   * User/host visibility preference.
+   * Document sync may still hide the bar for plain SVG.
+   */
+  setVisible(visible: boolean): void {
+    this.userVisible = visible;
+    this.applyVisibility();
+  }
+
+  /** Called by EmbedViewer when the document allows / forbids the bar. */
+  setDocumentAllowed(allowed: boolean): void {
+    this.documentAllowed = allowed;
+    this.applyVisibility();
+  }
+
+  private applyVisibility(): void {
+    this.el.style.display =
+      this.userVisible && this.documentAllowed ? "flex" : "none";
   }
 
   setParams(params: ParamMap, descs?: ParamDesc[]): void {

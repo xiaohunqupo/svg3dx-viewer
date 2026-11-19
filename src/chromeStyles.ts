@@ -2,9 +2,9 @@
 const STYLE_ID = "svg3dx-viewer-chrome-styles";
 
 const CSS = `
-.svg3dx-model-bar,
 .svg3dx-params-bar,
-.svg3dx-display-mode-bar {
+.svg3dx-display-mode-bar,
+.svg3dx-settings-bar__frame {
   background: var(--svg3dx-chrome-bg, rgba(255, 255, 255, 0.92));
   border: 1px solid var(--svg3dx-chrome-border, #c5ced8);
   border-radius: 6px;
@@ -13,14 +13,28 @@ const CSS = `
   color: var(--svg3dx-chrome-fg, #1f2937);
 }
 
+.svg3dx-model-bar {
+  font: 12px/1.3 system-ui, sans-serif;
+  color: var(--svg3dx-chrome-fg, #1f2937);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
 .svg3dx-model-bar select,
 .svg3dx-params-bar input[type="text"],
-.svg3dx-params-bar input[type="number"] {
+.svg3dx-params-bar input[type="number"],
+.svg3dx-settings-bar__frame select {
   border: 1px solid var(--svg3dx-chrome-border, #c5ced8);
   border-radius: 4px;
   background: var(--svg3dx-chrome-input-bg, #fff);
   color: inherit;
   font: inherit;
+}
+
+.svg3dx-settings-bar__btn:hover,
+.svg3dx-settings-bar__row:hover {
+  background: var(--svg3dx-chrome-hover, rgba(15, 23, 42, 0.04));
 }
 
 .svg3dx-params-bar__body {
