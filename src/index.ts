@@ -43,6 +43,11 @@ export { buildThreeObject } from "./primitive.js";
 export { resolveActiveModel } from "./model.js";
 export { createViewer, EmbedViewer } from "./createViewer.js";
 export { PlaneHelper } from "./PlaneHelper.js";
+export {
+  sectionFrame,
+  parseSectionShapes2D,
+  REVOLVE_DEFAULT_SECTION_XF,
+} from "./section.js";
 export { buildSvg2dObjects, getDefaultSvg2dFont } from "./svg2d.js";
 export {
   isSvg3dxDocument,

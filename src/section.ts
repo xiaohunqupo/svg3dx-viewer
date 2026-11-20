@@ -262,42 +262,56 @@ function shapeToPolyline2D(
   return null;
 }
 
+export type Section2DParsed = Section2D & {
+  /** Shape tag (`path` / `circle` / …). */
+  tag: string;
+};
+
+export type SectionPolyline3D = {
+  points: THREE.Vector3[];
+  closed: boolean;
+  tag: string;
+};
+
+/** All SVG shapes in a core `section` map → 2D polylines (document order). */
+export function parseSectionShapes2D(
+  sectionVal: Value | undefined,
+  circleSegs = 32
+): Section2DParsed[] {
+  const map = asMap(sectionVal);
+  if (!map) return [];
+  const shapes = map.shapes;
+  if (!Array.isArray(shapes) || shapes.length === 0) return [];
+  const out: Section2DParsed[] = [];
+  for (const raw of shapes) {
+    const shape = asMap(raw as Value);
+    if (!shape) continue;
+    const poly = shapeToPolyline2D(shape, circleSegs);
+    if (!poly || poly.points.length < 2) continue;
+    const tag = typeof shape.tag === "string" ? shape.tag : "";
+    out.push({ ring: poly.points, closed: poly.closed, tag });
+  }
+  return out;
+}
+
 /** First SVG shape in a core `section` map → 2D polyline. */
 export function parseSection2D(
   sectionVal: Value | undefined,
   circleSegs = 32
-): Section2D | null {
-  const map = asMap(sectionVal);
-  if (!map) return null;
-  const shapes = map.shapes;
-  if (!Array.isArray(shapes) || shapes.length === 0) return null;
-  const first = asMap(shapes[0] as Value);
-  if (!first) return null;
-  const poly = shapeToPolyline2D(first, circleSegs);
-  if (!poly || poly.points.length < 2) return null;
-  return { ring: poly.points, closed: poly.closed };
+): Section2DParsed | null {
+  return parseSectionShapes2D(sectionVal, circleSegs)[0] ?? null;
 }
 
-/**
- * Resolve `<s3dx:section>` (+ optional parent pose) to a 3D polyline.
- * When `forceClosed`, treat as ring (extrude / loft / closed revolve).
- */
-export function sectionToPolyline3D(
-  sectionVal: Value | undefined,
-  parentPose?: Partial<Pose>,
-  opts?: { circleSegs?: number; forceClosed?: boolean }
-): { points: THREE.Vector3[]; closed: boolean } | null {
-  const map = asMap(sectionVal);
-  if (!map) return null;
-  const sec2d = parseSection2D(sectionVal, opts?.circleSegs ?? 32);
-  if (!sec2d) return null;
-
-  const pose = resolvePose(map, parentPose);
+function mapShapeToPolyline3D(
+  sec2d: Section2DParsed,
+  pose: Pose,
+  forceClosed: boolean
+): SectionPolyline3D | null {
   const frame = sectionFrame(pose.origin, pose.normal, pose.xDir);
   const points = sec2d.ring.map((uv) =>
     frame.origin.clone().addScaledVector(frame.x, uv.x).addScaledVector(frame.y, uv.y)
   );
-  let closed = sec2d.closed || !!opts?.forceClosed;
+  let closed = sec2d.closed || forceClosed;
   if (
     points.length >= 2 &&
     points[0]!.distanceToSquared(points[points.length - 1]!) < 1e-12
@@ -305,7 +319,149 @@ export function sectionToPolyline3D(
     points.pop();
     closed = true;
   }
-  return points.length >= 2 ? { points, closed } : null;
+  return points.length >= 2
+    ? { points, closed, tag: sec2d.tag }
+    : null;
+}
+
+/**
+ * Resolve `<s3dx:section>` (+ optional parent pose) to 3D polylines
+ * (one per 2D shape, document order). When `forceClosed`, treat as rings.
+ */
+export function sectionToPolylines3D(
+  sectionVal: Value | undefined,
+  parentPose?: Partial<Pose>,
+  opts?: { circleSegs?: number; forceClosed?: boolean }
+): SectionPolyline3D[] {
+  const map = asMap(sectionVal);
+  if (!map) return [];
+  const shapes = parseSectionShapes2D(sectionVal, opts?.circleSegs ?? 32);
+  if (!shapes.length) return [];
+  const pose = resolvePose(map, parentPose);
+  const forceClosed = !!opts?.forceClosed;
+  const out: SectionPolyline3D[] = [];
+  for (const s of shapes) {
+    const poly = mapShapeToPolyline3D(s, pose, forceClosed);
+    if (poly) out.push(poly);
+  }
+  return out;
+}
+
+/**
+ * Default revolve section `s3dx:transform` (no translation):
+ * `matrix(1 0 0  0 0 1  0 -1 0  0 0 0)` — section-local XY → body XOZ
+ * `(u,v,0) → (u, 0, v)`. Identity would leave the section on XY (⊥ body Z) → invalid.
+ */
+export const REVOLVE_DEFAULT_SECTION_XF = [
+  1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 0, 0,
+] as const;
+
+/** Standard section-local XY (used before the revolve default orientation xf). */
+const SECTION_XY_POSE: Pose = {
+  origin: new THREE.Vector3(0, 0, 0),
+  normal: new THREE.Vector3(0, 0, 1),
+  xDir: new THREE.Vector3(1, 0, 0),
+};
+
+const BODY_Z = new THREE.Vector3(0, 0, 1);
+
+function sectionTransformMatrix(section: Record<string, Value>): THREE.Matrix4 | null {
+  const xf = section.transform;
+  if (!xf) return null;
+  if (Array.isArray(xf) && xf.length >= 12) {
+    return mat4x3FromList(xf as number[]);
+  }
+  const map = asMap(xf as Value);
+  if (map && Array.isArray(map.m) && (map.m as number[]).length >= 12) {
+    return mat4x3FromList(map.m as number[]);
+  }
+  return null;
+}
+
+function mat4x3FromList(m: ArrayLike<number>): THREE.Matrix4 {
+  const mat = new THREE.Matrix4();
+  mat.set(
+    Number(m[0]), Number(m[3]), Number(m[6]), Number(m[9]),
+    Number(m[1]), Number(m[4]), Number(m[7]), Number(m[10]),
+    Number(m[2]), Number(m[5]), Number(m[8]), Number(m[11]),
+    0, 0, 0, 1
+  );
+  return mat;
+}
+
+/**
+ * Revolve: map section shapes into body-local space.
+ * Plane must be parallel to body +Z after pose + transform; else invalid → [].
+ * If neither pose attrs nor transform are set, inject REVOLVE_DEFAULT_SECTION_XF.
+ */
+export function sectionToRevolvePolylines3D(
+  sectionVal: Value | undefined,
+  opts?: { circleSegs?: number; forceClosed?: boolean }
+): SectionPolyline3D[] {
+  const map = asMap(sectionVal);
+  if (!map) return [];
+  const shapes = parseSectionShapes2D(sectionVal, opts?.circleSegs ?? 32);
+  if (!shapes.length) return [];
+
+  const hasPoseAttr =
+    map.origin !== undefined || map.normal !== undefined || map.xDir !== undefined;
+  const userXf = sectionTransformMatrix(map);
+  const pose = resolvePose(map, SECTION_XY_POSE);
+  const frame = sectionFrame(pose.origin, pose.normal, pose.xDir);
+
+  // Unset everything → default XOZ orientation. Explicit pose without xf → identity xf.
+  const xf =
+    userXf ??
+    (hasPoseAttr
+      ? null
+      : mat4x3FromList(REVOLVE_DEFAULT_SECTION_XF));
+
+  // Transformed normal must be ⊥ body Z (plane ∥ Z).
+  const nWorld = frame.n.clone();
+  if (xf) nWorld.transformDirection(xf);
+  if (Math.abs(nWorld.dot(BODY_Z)) > 1e-6) return [];
+
+  const forceClosed = !!opts?.forceClosed;
+  const out: SectionPolyline3D[] = [];
+  for (const s of shapes) {
+    const points = s.ring.map((uv) => {
+      const p = frame.origin
+        .clone()
+        .addScaledVector(frame.x, uv.x)
+        .addScaledVector(frame.y, uv.y);
+      if (xf) p.applyMatrix4(xf);
+      return p;
+    });
+    let closed = s.closed || forceClosed;
+    if (
+      points.length >= 2 &&
+      points[0]!.distanceToSquared(points[points.length - 1]!) < 1e-12
+    ) {
+      points.pop();
+      closed = true;
+    }
+    if (points.length >= 2) out.push({ points, closed, tag: s.tag });
+  }
+  return out;
+}
+
+/**
+ * Resolve `<s3dx:section>` (+ optional parent pose) to a 3D polyline
+ * (first shape only — prefer `sectionToPolylines3D` for multi-shape).
+ */
+export function sectionToPolyline3D(
+  sectionVal: Value | undefined,
+  parentPose?: Partial<Pose>,
+  opts?: { circleSegs?: number; forceClosed?: boolean }
+): SectionPolyline3D | null {
+  return sectionToPolylines3D(sectionVal, parentPose, opts)[0] ?? null;
+}
+
+/** Closed path or closed circle — eligible for revolve end caps (triangulated). */
+export function shapeAllowsRevolveCaps(tag: string, closed: boolean): boolean {
+  if (!closed) return false;
+  const t = tag.toLowerCase();
+  return t === "path" || t === "circle";
 }
 
 /** Closed 3D ring (first ≠ last) for extrude / loft. */

@@ -52,7 +52,8 @@ const PICK_DRAG_PX = 5;
 const AXES_UNIT = 1;
 /** Unit size for PlaneHelper before screen-based scaling. */
 const PLANE_UNIT = 10;
-const PLANE_COLOR = 0xc5ced8;
+/** Soft blue-gray so the plane stays readable over pale/white faces. */
+const PLANE_COLOR = 0x7eb6e8;
 /** Plane edge length as a fraction of the shorter viewport side (world units). */
 const PLANE_SCREEN_FRACTION = 0.55;
 /** AxesHelper length vs plane half-extent (>1 → tips past the plane edge). */
@@ -410,14 +411,18 @@ export class EmbedViewer {
     this.axesHelper = new THREE.AxesHelper(AXES_UNIT);
     this.axesHelper.name = "svg3dx-world-axes";
     this.axesHelper.visible = this.axesHelperVisible;
-    // Draw above the plane fill/border.
-    this.axesHelper.renderOrder = 1;
+    // Draw above PlaneHelper (1) and other scene solids (0).
+    this.axesHelper.renderOrder = 2;
     const axesMats = Array.isArray(this.axesHelper.material)
       ? this.axesHelper.material
       : [this.axesHelper.material];
     for (const m of axesMats) {
       m.transparent = true;
       m.depthWrite = false;
+      // Bias toward camera so axes win over coplanar plane/entity faces.
+      m.polygonOffset = true;
+      m.polygonOffsetFactor = -2;
+      m.polygonOffsetUnits = -2;
     }
     this.scene.add(this.axesHelper);
 

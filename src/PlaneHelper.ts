@@ -10,7 +10,7 @@ export class PlaneHelper extends THREE.Group {
   private readonly border: THREE.LineLoop;
   private readonly fill: THREE.Mesh;
 
-  constructor(size = 10, color: THREE.ColorRepresentation = 0xc5ced8) {
+  constructor(size = 10, color: THREE.ColorRepresentation = 0x7eb6e8) {
     super();
     this.name = "svg3dx-world-plane";
 
@@ -23,16 +23,23 @@ export class PlaneHelper extends THREE.Group {
       new THREE.Vector3(half, half, 0),
       new THREE.Vector3(-half, half, 0),
     ]);
+    // Priority: AxesHelper > PlaneHelper > other scene solids (see createViewer).
+    const planeRenderOrder = 1;
+
     const borderMat = new THREE.LineBasicMaterial({
       color: c,
       toneMapped: false,
       transparent: true,
       opacity: 0.95,
       depthWrite: false,
+      // Bias toward camera so coplanar entity edges lose to the frame.
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
     });
     this.border = new THREE.LineLoop(borderGeom, borderMat);
     this.border.name = "svg3dx-world-plane-border";
-    this.border.renderOrder = 0;
+    this.border.renderOrder = planeRenderOrder;
 
     const fillGeom = new THREE.PlaneGeometry(size, size);
     const fillMat = new THREE.MeshBasicMaterial({
@@ -42,14 +49,18 @@ export class PlaneHelper extends THREE.Group {
       depthWrite: false,
       side: THREE.DoubleSide,
       toneMapped: false,
+      // Win z-fighting against coplanar entity faces; still occluded when behind.
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
     });
     this.fill = new THREE.Mesh(fillGeom, fillMat);
     this.fill.name = "svg3dx-world-plane-fill";
-    this.fill.renderOrder = -1;
+    this.fill.renderOrder = planeRenderOrder;
 
     this.add(this.fill);
     this.add(this.border);
-    this.renderOrder = 0;
+    this.renderOrder = planeRenderOrder;
   }
 
   dispose(): void {

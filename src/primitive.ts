@@ -383,19 +383,12 @@ export function buildPrimitive(
       break;
     }
     case "revolve": {
-      {
-        const origin = vec3(param(params, "origin"), [0, 0, 0]);
-        const normal = vec3(param(params, "normal"), [0, 0, 1]);
-        const xDir = vec3(param(params, "xDir"), [1, 0, 0]);
-        geometry = buildRevolveGeometry(
-          param(params, "section"),
-          vec3(param(params, "axisOrigin")),
-          vec3(param(params, "axisDir"), [0, 0, 1]),
-          num(param(params, "angle"), 360),
-          { origin, normal, xDir },
-          param(params, "solid")
-        );
-      }
+      // Axis = body +Z; section pose/transform relative to body; plane must ∥ Z.
+      geometry = buildRevolveGeometry(
+        param(params, "section"),
+        num(param(params, "angle"), 360),
+        param(params, "solid")
+      );
       if (!geometry) return null;
       break;
     }

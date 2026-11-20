@@ -1,7 +1,13 @@
 import * as THREE from "three";
 import type { Value } from "./types.js";
 import { pointsFromValue } from "./sweep.js";
-import { sectionToPolyline3D, sectionToRing3D } from "./section.js";
+import {
+  shapeAllowsRevolveCaps,
+  sectionToPolylines3D,
+  sectionToRevolvePolylines3D,
+  sectionToRing3D,
+  type SectionPolyline3D,
+} from "./section.js";
 
 /** Shared flat-shaded triangle accumulator. */
 export class FlatMeshBuilder {
@@ -189,39 +195,30 @@ function radiusAboutAxis(
   return Math.sqrt(Math.max(0, v.lengthSq() - axial * axial));
 }
 
-/**
- * Revolve a section polyline around an axis.
- *
- * Each section edge → its own strip (hard crease at section corners).
- * Normals are analytic for a surface of revolution so shading is smooth
- * around θ (no faceted color bands from averaged face normals).
- */
-export function buildRevolveGeometry(
-  sectionVal: Value | undefined,
-  axisOrigin: THREE.Vector3,
-  axisDir: THREE.Vector3,
-  angleDeg: number,
-  parentPose?: {
-    origin?: THREE.Vector3;
-    normal?: THREE.Vector3;
-    xDir?: THREE.Vector3;
-  },
-  solidRaw?: Value | undefined
-): THREE.BufferGeometry | null {
-  const solid = solidRaw === false || solidRaw === "false" ? false : true;
-  const poly = sectionToPolyline3D(sectionVal, parentPose, { forceClosed: false });
-  if (!poly || poly.points.length < 2) return null;
-  let pts = poly.points;
-  let closed = poly.closed;
-  if (pts.length >= 3 && !closed) closed = true;
+/** Revolve body axis: always +Z through the body / section origin. */
+const REVOLVE_AXIS = new THREE.Vector3(0, 0, 1);
+const REVOLVE_ORIGIN = new THREE.Vector3(0, 0, 0);
 
-  const axis = axisDir.clone();
-  if (axis.lengthSq() < 1e-12) axis.set(0, 0, 1);
-  else axis.normalize();
+/**
+ * Revolve one XOZ profile about body +Z (CCW for positive angle).
+ * Caps (when requested) are triangulated end faces (fan from ring centroid).
+ */
+function revolveOneProfile(
+  poly: SectionPolyline3D,
+  angleDeg: number,
+  solid: boolean
+): THREE.BufferGeometry | null {
+  const pts = poly.points;
+  if (pts.length < 2) return null;
+  const closed = poly.closed;
+  const canCap = solid && shapeAllowsRevolveCaps(poly.tag, closed);
+  const axis = REVOLVE_AXIS;
+  const axisOrigin = REVOLVE_ORIGIN;
 
   const angle = THREE.MathUtils.clamp(angleDeg, 0, 360);
   const full = angle >= 360 - 1e-3;
   const segs = Math.max(32, Math.ceil(96 * (angle / 360)));
+  // Positive angle = CCW about +Z (right-hand rule).
   const theta = ((full ? 360 : angle) * Math.PI) / 180;
   const m = pts.length;
   const cols = full ? segs : segs + 1;
@@ -259,7 +256,6 @@ export function buildRevolveGeometry(
       rLen > 1e-10
         ? radial.multiplyScalar(1 / rLen)
         : new THREE.Vector3(1, 0, 0);
-    // Outward for CCW (r,z) loop: 2D normal (dz, -dr) → dz·r̂ − dr·axis
     const n = new THREE.Vector3()
       .addScaledVector(radialHat, dz)
       .addScaledVector(axis, -dr);
@@ -267,13 +263,11 @@ export function buildRevolveGeometry(
     return n.normalize();
   };
 
-  // Profile (r,z) for each point — z = axial coordinate
   const rz = pts.map((p) => {
     const v = p.clone().sub(axisOrigin);
     return { r: radiusAboutAxis(p, axisOrigin, axis), z: axis.dot(v) };
   });
 
-  // Ensure (r,z) winding is CCW so outward = (dz,-dr). If CW, flip edge order sense.
   let areaRz = 0;
   for (let i = 0; i < m; i++) {
     const a = rz[i]!;
@@ -292,7 +286,6 @@ export function buildRevolveGeometry(
     const j1 = closed ? (e + 1) % m : e + 1;
     const ra = rz[j0]!;
     const rb = rz[j1]!;
-    // If profile is CW, swap so (dr,dz) still yields outward with (dz,-dr)
     const r0 = ccw ? ra.r : rb.r;
     const z0 = ccw ? ra.z : rb.z;
     const r1 = ccw ? rb.r : ra.r;
@@ -311,9 +304,6 @@ export function buildRevolveGeometry(
     for (let i = 0; i < segs; i++) {
       const i0 = i;
       const i1 = full ? (i + 1) % segs : i + 1;
-      // a=row0@θ, b=row1@θ, c=row1@θ', d=row0@θ'
-      // Outward stripNormal is (dz,-dr); winding must be CCW when viewed
-      // from outside (a→d→c / a→c→b), not a→b→c (that faces inward).
       const a = base + i0 * 2;
       const b = base + i0 * 2 + 1;
       const c = base + i1 * 2 + 1;
@@ -328,8 +318,9 @@ export function buildRevolveGeometry(
   side.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
   side.setIndex(indices);
 
-  if (!solid || full || !closed) return side;
+  if (!canCap || full || !closed) return side;
 
+  // Triangulated end caps (fan from ring centroid).
   const caps = new FlatMeshBuilder();
   const ringAt = (col: number): THREE.Vector3[] => {
     const out: THREE.Vector3[] = [];
@@ -340,8 +331,6 @@ export function buildRevolveGeometry(
   const rEnd = ringAt(cols - 1);
   const c0 = centroid(rStart);
   const cN = centroid(rEnd);
-  // Start cap: outward along −axis (θ=0); end cap: along +axis (θ=end).
-  // Ring is CCW in (r,z); reverse start so geometric normal points −axis.
   for (let j = 0; j < m; j++) {
     const j1 = (j + 1) % m;
     caps.pushTri(c0, rStart[j1]!, rStart[j]!);
@@ -350,6 +339,36 @@ export function buildRevolveGeometry(
   const capGeom = caps.toGeometry();
   if (!capGeom) return side;
   return mergeGeometriesKeepNormals(side, capGeom);
+}
+
+/**
+ * Revolve section 2D shapes in the revolve body frame.
+ *
+ * - Axis = body +Z through body origin; positive `angle` = CCW
+ * - Section pose / `transform` relative to the body; plane must ∥ body Z
+ * - Multiple 2D shapes each revolve independently (no union)
+ * - Closed path / circle get triangulated end caps when `solid` and angle < 360°
+ */
+export function buildRevolveGeometry(
+  sectionVal: Value | undefined,
+  angleDeg: number,
+  solidRaw?: Value | undefined
+): THREE.BufferGeometry | null {
+  const solid = solidRaw === false || solidRaw === "false" ? false : true;
+  const polys = sectionToRevolvePolylines3D(sectionVal, { forceClosed: false });
+  if (!polys.length) return null;
+
+  let merged: THREE.BufferGeometry | null = null;
+  for (const poly of polys) {
+    const g = revolveOneProfile(poly, angleDeg, solid);
+    if (!g) continue;
+    if (!merged) {
+      merged = g;
+      continue;
+    }
+    merged = mergeGeometriesKeepNormals(merged, g);
+  }
+  return merged;
 }
 
 function mergeGeometriesKeepNormals(
