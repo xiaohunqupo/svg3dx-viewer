@@ -78,8 +78,20 @@ type Slot = {
   frame: Frame;
 };
 
-/** SVG-like miter limit: collapse to bevel when miter would spike. */
-const MITER_LIMIT = 4;
+/** Default matches SVG/CSS `stroke-miterlimit` (Canvas/PDF often use 10). */
+export const DEFAULT_MITER_LIMIT = 4;
+
+/** Clamp author `miterLimit` to a usable ratio (≥ 1). */
+export function resolveMiterLimit(raw: Value | undefined): number {
+  const n =
+    typeof raw === "number"
+      ? raw
+      : raw != null && Number.isFinite(Number(raw))
+        ? Number(raw)
+        : DEFAULT_MITER_LIMIT;
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return n;
+}
 
 function dedupePolyline(pts: THREE.Vector3[]): THREE.Vector3[] {
   const out: THREE.Vector3[] = [];
@@ -134,10 +146,8 @@ function initialNormal(
 const CORNER_DOT = Math.cos((25 * Math.PI) / 180);
 
 /**
- * Expand a control polyline with automatic corners.
- * - arc: circular fillet (default)
- * - chamfer: cut corner
- * - sharp / miter: leave vertices as-is (frame join differs later)
+ * Expand a control polyline with automatic round corners (fillet).
+ * `bevel` / `miter` leave vertices as-is (frame join differs later).
  */
 export function applyPathCorners(
   path: THREE.Vector3[],
@@ -146,8 +156,8 @@ export function applyPathCorners(
 ): THREE.Vector3[] {
   const pts = dedupePolyline(path);
   if (pts.length < 3) return pts;
-  const mode = corner === "auto" ? "arc" : corner;
-  if (mode !== "arc" && mode !== "chamfer") return pts;
+  const mode = corner === "auto" ? "round" : corner;
+  if (mode !== "round") return pts;
 
   let R = cornerRadius;
   if (R == null || !(R > 0)) {
@@ -195,14 +205,8 @@ export function applyPathCorners(
     }
 
     const maxTrim = Math.min(lenIn, lenOut) * 0.49;
-    if (mode === "chamfer") {
-      const d = Math.min(R, maxTrim);
-      out.push(B.clone().addScaledVector(u, d));
-      out.push(B.clone().addScaledVector(v, d));
-      continue;
-    }
 
-    // arc fillet
+    // round fillet
     const half = alpha / 2;
     const tanHalf = Math.tan(half);
     if (!(tanHalf > 1e-9)) {
@@ -326,15 +330,14 @@ function makeFrame(
 
 /**
  * Frames along a polyline.
- * - arc: dense samples, single frames (smooth normals)
- * - chamfer: dual frames at cut verts with creaseSeam (hard normals, no fill)
- * - sharp / miter: dual frames with bevelSeam (outer fill / miter join)
+ * - round: dense samples, single frames (smooth normals)
+ * - bevel / miter: dual frames with bevelSeam (bevel fill / miter join)
  */
 function buildFrames(
   path: THREE.Vector3[],
   orient: string,
   refDir: THREE.Vector3 | null,
-  corner: string = "arc"
+  corner: string = "round"
 ): Frame[] {
   const pts = dedupePolyline(path);
   if (pts.length < 2) return [];
@@ -355,18 +358,11 @@ function buildFrames(
     const tout = pts[i + 1]!.clone().sub(pts[i]!).normalize();
     const kink = tin.dot(tout) < CORNER_DOT;
 
-    if (kink && (corner === "sharp" || corner === "miter")) {
+    if (kink && (corner === "bevel" || corner === "miter")) {
       frames.push(makeFrame(pts[i]!, tin, prev, orient, refDir));
       const afterIn = frames[frames.length - 1]!;
       const out = makeFrame(pts[i]!, tout, afterIn, orient, refDir);
       out.bevelSeam = true;
-      frames.push(out);
-    } else if (kink && corner === "chamfer") {
-      // Cut already in the path; break normals only — no extra bevel patch.
-      frames.push(makeFrame(pts[i]!, tin, prev, orient, refDir));
-      const afterIn = frames[frames.length - 1]!;
-      const out = makeFrame(pts[i]!, tout, afterIn, orient, refDir);
-      out.creaseSeam = true;
       frames.push(out);
     } else {
       const sum = tin.clone().add(tout);
@@ -457,17 +453,26 @@ function miterLengthOk(
   return M.distanceTo(C) <= base * limit + 1e-6;
 }
 
+/** Join style for one side of a bend (`miter` vs bevel-like). */
+function joinModeForSide(corner: string): "bevel" | "miter" {
+  return corner === "miter" ? "miter" : "bevel";
+}
+
 /**
  * Resolve one profile vertex across a dual-frame corner.
- * - miter mode: both sides → wall intersection (miter limit → bevel fallback)
- * - bevel/sharp/chamfer: outer keeps both section ends (fill patch);
+ * Outer (convex) and inner (concave) sides may use different join modes —
+ * same split as common CAD / Blender Bevel outer·inner miters.
+ * - miter: wall-wall intersection (miter limit → bevel fallback)
+ * - bevel / round (when not path-filleted): outer keeps both section ends (fill patch);
  *   inner collapses to the wall intersection so volumes don't overlap.
  */
 function joinProfileVertex(
   fin: Frame,
   fout: Frame,
   uv: THREE.Vector2,
-  mode: "bevel" | "miter"
+  outerCorner: string,
+  innerCorner: string,
+  miterLimit: number
 ): { pin: THREE.Vector3; pout: THREE.Vector3 } {
   const Pa = sectionPoint(fin, uv);
   const Pb = sectionPoint(fout, uv);
@@ -475,23 +480,74 @@ function joinProfileVertex(
   const offset = Pa.clone().sub(C);
   const outside = isOutsideVertex(offset, fin.t, fout.t);
   const M = miterPoint(Pa, fin.t, Pb, fout.t);
+  const mode = joinModeForSide(outside ? outerCorner : innerCorner);
 
   if (mode === "miter") {
-    if (miterLengthOk(M, C, Pa, MITER_LIMIT)) {
+    if (miterLengthOk(M, C, Pa, miterLimit)) {
       return { pin: M.clone(), pout: M.clone() };
     }
     return { pin: Pa, pout: Pb };
   }
 
-  // bevel: inner → miter collapse; outer → keep both ends
-  if (!outside && miterLengthOk(M, C, Pa, MITER_LIMIT * 2)) {
+  // bevel-like: inner → miter collapse; outer → keep both ends
+  if (!outside && miterLengthOk(M, C, Pa, miterLimit * 2)) {
     return { pin: M.clone(), pout: M.clone() };
   }
   return { pin: Pa, pout: Pb };
 }
 
-function joinModeForCorner(corner: string): "bevel" | "miter" {
-  return corner === "miter" ? "miter" : "bevel";
+/** Resolved outer / inner corner types (+ radii) for a sweep / pipe. */
+export type CornerSides = {
+  outer: string;
+  inner: string;
+  outerRadius: number | undefined;
+  innerRadius: number | undefined;
+};
+
+function readCornerToken(raw: Value | undefined): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const s = raw.trim().toLowerCase();
+  return s || undefined;
+}
+
+function readCornerRadius(raw: Value | undefined): number | undefined {
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) ? raw : undefined;
+  }
+  if (raw == null) return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** Resolve outer/inner corner attrs (default each side to `round`). */
+export function resolveCornerSides(
+  outerCornerRaw?: Value | undefined,
+  innerCornerRaw?: Value | undefined,
+  outerCornerRadiusRaw?: Value | undefined,
+  innerCornerRadiusRaw?: Value | undefined
+): CornerSides {
+  return {
+    outer: readCornerToken(outerCornerRaw) ?? "round",
+    inner: readCornerToken(innerCornerRaw) ?? "round",
+    outerRadius: readCornerRadius(outerCornerRadiusRaw),
+    innerRadius: readCornerRadius(innerCornerRadiusRaw),
+  };
+}
+
+/**
+ * When both sides are `round`, fillet the centerline.
+ * Otherwise keep path kinks and join per-side in profile space.
+ */
+function pathShapeFromSides(
+  sides: CornerSides
+): { mode: string; radius: number | undefined } | null {
+  if (sides.outer === sides.inner && sides.outer === "round") {
+    return {
+      mode: "round",
+      radius: sides.outerRadius ?? sides.innerRadius,
+    };
+  }
+  return null;
 }
 
 /** Bisector section frame between two same-origin frames (for chamfer crease). */
@@ -511,13 +567,15 @@ function bisectorFrame(fin: Frame, fout: Frame): Frame {
 
 /**
  * Expand frames → slots with corner joins applied.
- * - bevelSeam: outer/inner join (sharp/miter)
+ * - bevelSeam: outer/inner join (sharp/miter; sides may differ)
  * - creaseSeam: shared bisector ring, dual normals (chamfer hard edge)
  */
 function buildSlots(
   frames: Frame[],
   ring: THREE.Vector2[],
-  joinMode: "bevel" | "miter"
+  outerCorner: string,
+  innerCorner: string,
+  miterLimit: number
 ): Slot[] {
   const slots: Slot[] = [];
   for (let i = 0; i < frames.length; ) {
@@ -527,7 +585,14 @@ function buildSlots(
       const pin: THREE.Vector3[] = [];
       const pout: THREE.Vector3[] = [];
       for (const uv of ring) {
-        const j = joinProfileVertex(f0, f1, uv, joinMode);
+        const j = joinProfileVertex(
+          f0,
+          f1,
+          uv,
+          outerCorner,
+          innerCorner,
+          miterLimit
+        );
         pin.push(j.pin);
         pout.push(j.pout);
       }
@@ -787,10 +852,9 @@ function appendSlottedRadialWall(
 
 /**
  * Build a swept solid (or open shell) from a 2D section along a 3D polyline.
- * - arc: dense path + smooth frame normals
- * - chamfer: path cut + hard creases at cut verts (no extra fill)
- * - sharp: dual-frame outer flat bevel + inner miter
- * - miter: dual-frame wall-wall miter
+ * Outer / inner corner types may differ (CAD-style); equal `round`
+ * still fillets the centerline. Mixed or bevel/miter keeps path kinks and
+ * joins each profile vertex by the side it lies on.
  */
 export function buildSweepGeometry(
   sectionVal: Value | undefined,
@@ -798,8 +862,11 @@ export function buildSweepGeometry(
   orientRaw: Value | undefined,
   refDirVal: Value | undefined,
   solidRaw: Value | undefined,
-  cornerRaw?: Value | undefined,
-  cornerRadiusRaw?: Value | undefined
+  outerCornerRaw?: Value | undefined,
+  innerCornerRaw?: Value | undefined,
+  outerCornerRadiusRaw?: Value | undefined,
+  innerCornerRadiusRaw?: Value | undefined,
+  miterLimitRaw?: Value | undefined
 ): THREE.BufferGeometry | null {
   const profile = parseProfile(sectionVal);
   const rawPts = pathToPoints(pathVal);
@@ -808,14 +875,13 @@ export function buildSweepGeometry(
   const orient =
     typeof orientRaw === "string" ? orientRaw.toLowerCase() : "frenet";
   const solid = solidRaw === false || solidRaw === "false" ? false : true;
-  const corner =
-    typeof cornerRaw === "string" ? cornerRaw.toLowerCase() : "arc";
-  const cornerRadius =
-    typeof cornerRadiusRaw === "number"
-      ? cornerRadiusRaw
-      : cornerRadiusRaw != null && Number.isFinite(Number(cornerRadiusRaw))
-        ? Number(cornerRadiusRaw)
-        : undefined;
+  const sides = resolveCornerSides(
+    outerCornerRaw,
+    innerCornerRaw,
+    outerCornerRadiusRaw,
+    innerCornerRadiusRaw
+  );
+  const miterLimit = resolveMiterLimit(miterLimitRaw);
 
   let refDir: THREE.Vector3 | null = null;
   const refNums = flattenNumbers(refDirVal);
@@ -825,13 +891,24 @@ export function buildSweepGeometry(
     else refDir.normalize();
   }
 
-  const pathPts = applyPathCorners(rawPts, corner, cornerRadius);
-  const frames = buildFrames(pathPts, orient, refDir, corner);
+  const shaped = pathShapeFromSides(sides);
+  const pathPts = shaped
+    ? applyPathCorners(rawPts, shaped.mode, shaped.radius)
+    : dedupePolyline(rawPts);
+  // Equal round → shaped path; otherwise dual-frame joins at kinks.
+  const frameStyle = shaped ? shaped.mode : "bevel";
+  const frames = buildFrames(pathPts, orient, refDir, frameStyle);
   if (frames.length < 2) return null;
 
   const ring = profile.ring;
   const m = ring.length;
-  const slots = buildSlots(frames, ring, joinModeForCorner(corner));
+  const slots = buildSlots(
+    frames,
+    ring,
+    sides.outer,
+    sides.inner,
+    miterLimit
+  );
   if (slots.length < 2) return null;
 
   const positions: number[] = [];
@@ -895,23 +972,29 @@ export function buildPipeGeometry(
   radius: number,
   innerRadius: number | undefined,
   pathVal: Value | undefined,
-  cornerRaw?: Value | undefined,
-  cornerRadiusRaw?: Value | undefined
+  outerCornerRaw?: Value | undefined,
+  innerCornerRaw?: Value | undefined,
+  outerCornerRadiusRaw?: Value | undefined,
+  innerCornerRadiusRaw?: Value | undefined,
+  miterLimitRaw?: Value | undefined
 ): THREE.BufferGeometry | null {
   const R = Math.max(radius, 1e-6);
   const rawPts = pathToPoints(pathVal);
   if (rawPts.length < 2) return null;
 
-  const corner =
-    typeof cornerRaw === "string" ? cornerRaw.toLowerCase() : "arc";
-  const cornerRadius =
-    typeof cornerRadiusRaw === "number"
-      ? cornerRadiusRaw
-      : cornerRadiusRaw != null && Number.isFinite(Number(cornerRadiusRaw))
-        ? Number(cornerRadiusRaw)
-        : undefined;
-  const pathPts = applyPathCorners(rawPts, corner, cornerRadius);
-  const frames = buildFrames(pathPts, "frenet", null, corner);
+  const sides = resolveCornerSides(
+    outerCornerRaw,
+    innerCornerRaw,
+    outerCornerRadiusRaw,
+    innerCornerRadiusRaw
+  );
+  const miterLimit = resolveMiterLimit(miterLimitRaw);
+  const shaped = pathShapeFromSides(sides);
+  const pathPts = shaped
+    ? applyPathCorners(rawPts, shaped.mode, shaped.radius)
+    : dedupePolyline(rawPts);
+  const frameStyle = shaped ? shaped.mode : "bevel";
+  const frames = buildFrames(pathPts, "frenet", null, frameStyle);
   if (frames.length < 2) return null;
 
   const hasInner =
@@ -924,8 +1007,13 @@ export function buildPipeGeometry(
   const outer = circleRing(R);
   const inner = hasInner ? circleRing(ri) : null;
   const m = outer.length;
-  const joinMode = joinModeForCorner(corner);
-  const outerSlots = buildSlots(frames, outer, joinMode);
+  const outerSlots = buildSlots(
+    frames,
+    outer,
+    sides.outer,
+    sides.inner,
+    miterLimit
+  );
   if (outerSlots.length < 2) return null;
 
   const positions: number[] = [];
@@ -942,7 +1030,13 @@ export function buildPipeGeometry(
   );
 
   if (inner) {
-    const innerSlots = buildSlots(frames, inner, joinMode);
+    const innerSlots = buildSlots(
+      frames,
+      inner,
+      sides.outer,
+      sides.inner,
+      miterLimit
+    );
     appendSlottedRadialWall(
       innerSlots,
       m,

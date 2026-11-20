@@ -83,7 +83,147 @@ function resolvePose(
   };
 }
 
-/** Minimal SVG path subset: M/L/H/V/Z (+ relative). */
+const CURVE_SEGS = 12;
+
+function sampleCubic(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  x3: number,
+  y3: number,
+  segs: number,
+  out: (x: number, y: number) => void
+): void {
+  for (let s = 1; s <= segs; s++) {
+    const t = s / segs;
+    const u = 1 - t;
+    const x =
+      u * u * u * x0 +
+      3 * u * u * t * x1 +
+      3 * u * t * t * x2 +
+      t * t * t * x3;
+    const y =
+      u * u * u * y0 +
+      3 * u * u * t * y1 +
+      3 * u * t * t * y2 +
+      t * t * t * y3;
+    out(x, y);
+  }
+}
+
+function sampleQuadratic(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  segs: number,
+  out: (x: number, y: number) => void
+): void {
+  for (let s = 1; s <= segs; s++) {
+    const t = s / segs;
+    const u = 1 - t;
+    out(
+      u * u * x0 + 2 * u * t * x1 + t * t * x2,
+      u * u * y0 + 2 * u * t * y1 + t * t * y2
+    );
+  }
+}
+
+/** Flatten an SVG elliptical arc (endpoint param) into line samples. */
+function sampleArc(
+  x0: number,
+  y0: number,
+  rx: number,
+  ry: number,
+  xAxisRotDeg: number,
+  largeArc: boolean,
+  sweep: boolean,
+  x: number,
+  y: number,
+  segs: number,
+  out: (px: number, py: number) => void
+): void {
+  if (rx === 0 || ry === 0) {
+    out(x, y);
+    return;
+  }
+  const phi = (xAxisRotDeg * Math.PI) / 180;
+  const cosPhi = Math.cos(phi);
+  const sinPhi = Math.sin(phi);
+  let rxAbs = Math.abs(rx);
+  let ryAbs = Math.abs(ry);
+
+  const dx2 = (x0 - x) / 2;
+  const dy2 = (y0 - y) / 2;
+  let x1p = cosPhi * dx2 + sinPhi * dy2;
+  let y1p = -sinPhi * dx2 + cosPhi * dy2;
+
+  const lambda = (x1p * x1p) / (rxAbs * rxAbs) + (y1p * y1p) / (ryAbs * ryAbs);
+  if (lambda > 1) {
+    const s = Math.sqrt(lambda);
+    rxAbs *= s;
+    ryAbs *= s;
+  }
+
+  const rxSq = rxAbs * rxAbs;
+  const rySq = ryAbs * ryAbs;
+  const x1pSq = x1p * x1p;
+  const y1pSq = y1p * y1p;
+  let sq =
+    (rxSq * rySq - rxSq * y1pSq - rySq * x1pSq) /
+    (rxSq * y1pSq + rySq * x1pSq);
+  sq = sq < 0 ? 0 : sq;
+  const coef = (largeArc === sweep ? -1 : 1) * Math.sqrt(sq);
+  const cxp = (coef * (rxAbs * y1p)) / ryAbs;
+  const cyp = (coef * -(ryAbs * x1p)) / rxAbs;
+
+  const cx = cosPhi * cxp - sinPhi * cyp + (x0 + x) / 2;
+  const cy = sinPhi * cxp + cosPhi * cyp + (y0 + y) / 2;
+
+  const angle = (
+    ux: number,
+    uy: number,
+    vx: number,
+    vy: number
+  ): number => {
+    const n = Math.sqrt(ux * ux + uy * uy) * Math.sqrt(vx * vx + vy * vy);
+    if (n < 1e-12) return 0;
+    let a = Math.acos(Math.min(1, Math.max(-1, (ux * vx + uy * vy) / n)));
+    if (ux * vy - uy * vx < 0) a = -a;
+    return a;
+  };
+
+  const start = angle(1, 0, (x1p - cxp) / rxAbs, (y1p - cyp) / ryAbs);
+  let delta = angle(
+    (x1p - cxp) / rxAbs,
+    (y1p - cyp) / ryAbs,
+    (-x1p - cxp) / rxAbs,
+    (-y1p - cyp) / ryAbs
+  );
+  if (!sweep && delta > 0) delta -= 2 * Math.PI;
+  if (sweep && delta < 0) delta += 2 * Math.PI;
+
+  const n = Math.max(segs, Math.ceil((Math.abs(delta) / (Math.PI * 2)) * 32));
+  for (let s = 1; s <= n; s++) {
+    const t = start + (delta * s) / n;
+    const cosT = Math.cos(t);
+    const sinT = Math.sin(t);
+    out(
+      cosPhi * rxAbs * cosT - sinPhi * ryAbs * sinT + cx,
+      sinPhi * rxAbs * cosT + cosPhi * ryAbs * sinT + cy
+    );
+  }
+}
+
+/**
+ * SVG path → polyline. Supports M/L/H/V/Z plus C/S/Q/T/A (and relative forms).
+ * Curves are sampled into line segments for extrude / revolve / loft / sweep.
+ */
 export function parseSvgPath2D(d: string): { points: THREE.Vector2[]; closed: boolean } {
   const points: THREE.Vector2[] = [];
   let closed = false;
@@ -91,8 +231,15 @@ export function parseSvgPath2D(d: string): { points: THREE.Vector2[]; closed: bo
   let cy = 0;
   let startX = 0;
   let startY = 0;
+  let lastCx = 0;
+  let lastCy = 0;
+  let lastWasCubic = false;
+  let lastWasQuad = false;
 
-  const tokens = d.match(/[MmLlHhVvZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g) ?? [];
+  const tokens =
+    d.match(
+      /[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g
+    ) ?? [];
   let i = 0;
   let cmd = "M";
 
@@ -111,7 +258,7 @@ export function parseSvgPath2D(d: string): { points: THREE.Vector2[]; closed: bo
 
   while (i < tokens.length) {
     const t = tokens[i]!;
-    if (/^[MmLlHhVvZz]$/.test(t)) {
+    if (/^[MmLlHhVvCcSsQqTtAaZz]$/.test(t)) {
       cmd = t;
       i++;
     }
@@ -127,6 +274,8 @@ export function parseSvgPath2D(d: string): { points: THREE.Vector2[]; closed: bo
         push(nx, ny);
         startX = nx;
         startY = ny;
+        lastWasCubic = false;
+        lastWasQuad = false;
         cmd = rel ? "l" : "L";
         break;
       }
@@ -136,6 +285,8 @@ export function parseSvgPath2D(d: string): { points: THREE.Vector2[]; closed: bo
         const x = readNum();
         const y = readNum();
         push(rel ? cx + x : x, rel ? cy + y : y);
+        lastWasCubic = false;
+        lastWasQuad = false;
         break;
       }
       case "H":
@@ -143,6 +294,8 @@ export function parseSvgPath2D(d: string): { points: THREE.Vector2[]; closed: bo
         const rel = cmd === "h";
         const x = readNum();
         push(rel ? cx + x : x, cy);
+        lastWasCubic = false;
+        lastWasQuad = false;
         break;
       }
       case "V":
@@ -150,6 +303,101 @@ export function parseSvgPath2D(d: string): { points: THREE.Vector2[]; closed: bo
         const rel = cmd === "v";
         const y = readNum();
         push(cx, rel ? cy + y : y);
+        lastWasCubic = false;
+        lastWasQuad = false;
+        break;
+      }
+      case "C":
+      case "c": {
+        const rel = cmd === "c";
+        const x1 = readNum();
+        const y1 = readNum();
+        const x2 = readNum();
+        const y2 = readNum();
+        const x = readNum();
+        const y = readNum();
+        const ax1 = rel ? cx + x1 : x1;
+        const ay1 = rel ? cy + y1 : y1;
+        const ax2 = rel ? cx + x2 : x2;
+        const ay2 = rel ? cy + y2 : y2;
+        const ax = rel ? cx + x : x;
+        const ay = rel ? cy + y : y;
+        sampleCubic(cx, cy, ax1, ay1, ax2, ay2, ax, ay, CURVE_SEGS, push);
+        lastCx = ax2;
+        lastCy = ay2;
+        lastWasCubic = true;
+        lastWasQuad = false;
+        break;
+      }
+      case "S":
+      case "s": {
+        const rel = cmd === "s";
+        const x2 = readNum();
+        const y2 = readNum();
+        const x = readNum();
+        const y = readNum();
+        const ax1 = lastWasCubic ? 2 * cx - lastCx : cx;
+        const ay1 = lastWasCubic ? 2 * cy - lastCy : cy;
+        const ax2 = rel ? cx + x2 : x2;
+        const ay2 = rel ? cy + y2 : y2;
+        const ax = rel ? cx + x : x;
+        const ay = rel ? cy + y : y;
+        sampleCubic(cx, cy, ax1, ay1, ax2, ay2, ax, ay, CURVE_SEGS, push);
+        lastCx = ax2;
+        lastCy = ay2;
+        lastWasCubic = true;
+        lastWasQuad = false;
+        break;
+      }
+      case "Q":
+      case "q": {
+        const rel = cmd === "q";
+        const x1 = readNum();
+        const y1 = readNum();
+        const x = readNum();
+        const y = readNum();
+        const ax1 = rel ? cx + x1 : x1;
+        const ay1 = rel ? cy + y1 : y1;
+        const ax = rel ? cx + x : x;
+        const ay = rel ? cy + y : y;
+        sampleQuadratic(cx, cy, ax1, ay1, ax, ay, CURVE_SEGS, push);
+        lastCx = ax1;
+        lastCy = ay1;
+        lastWasCubic = false;
+        lastWasQuad = true;
+        break;
+      }
+      case "T":
+      case "t": {
+        const rel = cmd === "t";
+        const x = readNum();
+        const y = readNum();
+        const ax1 = lastWasQuad ? 2 * cx - lastCx : cx;
+        const ay1 = lastWasQuad ? 2 * cy - lastCy : cy;
+        const ax = rel ? cx + x : x;
+        const ay = rel ? cy + y : y;
+        sampleQuadratic(cx, cy, ax1, ay1, ax, ay, CURVE_SEGS, push);
+        lastCx = ax1;
+        lastCy = ay1;
+        lastWasCubic = false;
+        lastWasQuad = true;
+        break;
+      }
+      case "A":
+      case "a": {
+        const rel = cmd === "a";
+        const rx = readNum();
+        const ry = readNum();
+        const rot = readNum();
+        const large = readNum() !== 0;
+        const sweep = readNum() !== 0;
+        const x = readNum();
+        const y = readNum();
+        const ax = rel ? cx + x : x;
+        const ay = rel ? cy + y : y;
+        sampleArc(cx, cy, rx, ry, rot, large, sweep, ax, ay, CURVE_SEGS, push);
+        lastWasCubic = false;
+        lastWasQuad = false;
         break;
       }
       case "Z":
@@ -157,10 +405,11 @@ export function parseSvgPath2D(d: string): { points: THREE.Vector2[]; closed: bo
         closed = true;
         cx = startX;
         cy = startY;
+        lastWasCubic = false;
+        lastWasQuad = false;
         break;
       }
       default:
-        // Skip unknown numeric junk
         i++;
         break;
     }

@@ -399,8 +399,11 @@ export function buildPrimitive(
         param(params, "orient"),
         param(params, "refDir"),
         param(params, "solid"),
-        param(params, "corner"),
-        param(params, "cornerRadius")
+        param(params, "outerCorner"),
+        param(params, "innerCorner"),
+        param(params, "outerCornerRadius"),
+        param(params, "innerCornerRadius"),
+        param(params, "miterLimit")
       );
       if (!geometry) return null;
       break;
@@ -411,8 +414,11 @@ export function buildPrimitive(
         num(param(params, "radius"), 1),
         inner === undefined ? undefined : num(inner, 0),
         param(params, "path"),
-        param(params, "corner"),
-        param(params, "cornerRadius")
+        param(params, "outerCorner"),
+        param(params, "innerCorner"),
+        param(params, "outerCornerRadius"),
+        param(params, "innerCornerRadius"),
+        param(params, "miterLimit")
       );
       if (!geometry) return null;
       break;
