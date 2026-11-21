@@ -71,6 +71,11 @@ export interface CreateViewerOptions {
    * Hosts that preview false branches (e.g. an editor) set this true.
    */
   retainInactive?: boolean;
+  /**
+   * Extra named defs `<g>` ids to evaluate beyond the active model
+   * (on-demand preview). Empty by default.
+   */
+  extraDefs?: string[];
   /** Render mode override: solid | wireframe | hidden-line */
   mode?: string;
   background?: number | string;
@@ -199,6 +204,7 @@ export class EmbedViewer {
   private model?: string;
   private mode?: string;
   private retainInactive = false;
+  private extraDefs: string[] = [];
   private lastResult: EvaluationResult | null = null;
   /** Bumped on every reload so overlapping glTF hydrates cannot commit stale scenes. */
   private reloadGeneration = 0;
@@ -265,6 +271,7 @@ export class EmbedViewer {
     this.model = options.model;
     this.mode = options.mode;
     this.retainInactive = options.retainInactive === true;
+    this.extraDefs = [...(options.extraDefs ?? [])].filter(Boolean);
     this.onParamsChange = options.onParamsChange;
     this.onWarnings = options.onWarnings;
     this.onResult = options.onResult;
@@ -705,6 +712,32 @@ export class EmbedViewer {
     return this.model;
   }
 
+  /**
+   * On-demand extra named defs group ids (beyond the active model).
+   * Reloads geometry when document text is already loaded unless `reload: false`.
+   */
+  async setExtraDefs(
+    ids: string[],
+    options: { fitCamera?: boolean; reload?: boolean } = {}
+  ): Promise<EvaluationResult | null> {
+    const next = [...new Set(ids.filter(Boolean))];
+    const same =
+      next.length === this.extraDefs.length &&
+      next.every((id, i) => id === this.extraDefs[i]);
+    if (same && this.lastResult && options.reload !== false) {
+      return this.lastResult;
+    }
+    this.extraDefs = next;
+    if (options.reload === false || !this.svgText) {
+      return this.lastResult;
+    }
+    return this.reload({ fitCamera: options.fitCamera === true });
+  }
+
+  getExtraDefs(): string[] {
+    return [...this.extraDefs];
+  }
+
   setMode(mode: string | undefined): void {
     this.mode = mode;
   }
@@ -868,6 +901,7 @@ export class EmbedViewer {
     } else {
       result = await parseSvg(this.svgText, this.params, this.model, {
         retainInactive: this.retainInactive,
+        extraDefs: this.extraDefs,
       });
     }
 
