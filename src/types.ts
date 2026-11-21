@@ -57,4 +57,6 @@ export type GeometryInstruction =
       styles: Record<string, Value>;
       children: GeometryInstruction[];
       transform: { m: number[] };
+      /** Present when evaluation retained a skipped condition branch. */
+      inactive?: boolean;
     };

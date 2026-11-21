@@ -15,7 +15,7 @@ export {
   toThreeMaterial,
 } from "./materials.js";
 export type { MaterialLibrary, ResolvedAppearance } from "./materials.js";
-export type { ParamMap } from "./wasm.js";
+export type { ParamMap, ParseSvgOptions } from "./wasm.js";
 export type { ParamDesc } from "./params.js";
 export type { CreateViewerOptions } from "./createViewer.js";
 export type { Svg3dxPickData } from "./pick.js";
@@ -24,7 +24,7 @@ export type {
   AntialiasLevel,
   ViewerUiState,
 } from "./SettingsBar.js";
-export type { FitCameraOptions } from "./scene.js";
+export type { FitCameraOptions, SceneBuildHooks } from "./scene.js";
 export type { ViewerLocale, ChromeStrings } from "./chromeLocale.js";
 
 export { initWasm, parseSvg } from "./wasm.js";
@@ -48,7 +48,7 @@ export {
   hydrateGltfPlaceholders,
   clearGltfCache,
 } from "./gltf.js";
-export type { GltfAssetUrlMap } from "./gltf.js";
+export type { GltfAssetUrlMap, GltfHydrateHooks } from "./gltf.js";
 export { resolveActiveModel } from "./model.js";
 export { createViewer, EmbedViewer } from "./createViewer.js";
 export { PlaneHelper } from "./PlaneHelper.js";

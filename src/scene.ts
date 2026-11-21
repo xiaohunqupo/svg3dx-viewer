@@ -13,6 +13,9 @@ import {
   type GltfAssetUrlMap,
 } from "./gltf.js";
 import type { EvaluationResult, GeometryInstruction } from "./types.js";
+import type { SceneBuildHooks } from "./sceneBuild.js";
+
+export type { SceneBuildHooks } from "./sceneBuild.js";
 
 export interface FitCameraOptions {
   /**
@@ -30,9 +33,11 @@ export class Svg3dxViewer {
   readonly root: THREE.Group;
   /**
    * With a model active, also keep each defs group — hidden — at that group's
-   * own transform, so an editor can show the definition in world space.
+   * own transform (host may show one definition in world space).
    */
   includeDefsWorld = false;
+  /** Optional host hooks for instruction → Object3D construction. */
+  buildHooks: SceneBuildHooks = {};
 
   constructor(scene?: THREE.Scene) {
     this.scene = scene ?? new THREE.Scene();
@@ -94,7 +99,13 @@ export class Svg3dxViewer {
           continue;
         }
         const defsPath = `defs:${use.group_id}`;
-        const obj = buildThreeObject(src, mode, defsPath, library);
+        const obj = buildThreeObject(
+          src,
+          mode,
+          defsPath,
+          library,
+          this.buildHooks
+        );
         if (!obj) continue;
         const usePath = `model:${model.id}.${i}`;
         obj.name = `use:${use.group_id}`;
@@ -106,7 +117,13 @@ export class Svg3dxViewer {
       }
       if (this.includeDefsWorld) {
         for (const [id, src] of groupsById) {
-          const obj = buildThreeObject(src, mode, `defs:${id}`, library);
+          const obj = buildThreeObject(
+            src,
+            mode,
+            `defs:${id}`,
+            library,
+            this.buildHooks
+          );
           if (!obj) continue;
           obj.name = `defs-world:${id}`;
           obj.visible = false;
@@ -118,7 +135,13 @@ export class Svg3dxViewer {
       for (const inst of result.instructions) {
         const path =
           inst.type === "group" && inst.id ? `defs:${inst.id}` : undefined;
-        const obj = buildThreeObject(inst, mode, path, library);
+        const obj = buildThreeObject(
+          inst,
+          mode,
+          path,
+          library,
+          this.buildHooks
+        );
         if (obj) this.root.add(obj);
       }
     }
@@ -132,7 +155,8 @@ export class Svg3dxViewer {
       this.root,
       documentBaseUrl,
       library,
-      assetUrls
+      assetUrls,
+      { afterInstance: this.buildHooks.afterGltfHydrated }
     );
     // Boolean + glTF was deferred (empty placeholders); retry CSG now meshes exist.
     recomputeBoolFallbacks(this.root, mode, library);

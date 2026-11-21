@@ -7,9 +7,15 @@ type WasmPkg = {
   parse_svg3dx_with_params: (
     input: string,
     params_json: string,
-    model?: string | null
+    model?: string | null,
+    retain_inactive?: boolean | null
   ) => unknown;
   default?: unknown;
+};
+
+export type ParseSvgOptions = {
+  /** Keep skipped if/if-not branches as `inactive` groups (default false). */
+  retainInactive?: boolean;
 };
 
 let pkg: WasmPkg | null = null;
@@ -77,14 +83,21 @@ export async function initWasm(
 export async function parseSvg(
   svgText: string,
   params: ParamMap = {},
-  model?: string
+  model?: string,
+  options: ParseSvgOptions = {}
 ): Promise<EvaluationResult> {
   await initWasm();
   if (!pkg) throw new Error("WASM not initialized");
+  const retainInactive = options.retainInactive === true;
   const paramsJson = JSON.stringify(params);
   const raw =
-    Object.keys(params).length > 0 || model
-      ? pkg.parse_svg3dx_with_params(svgText, paramsJson, model ?? undefined)
+    Object.keys(params).length > 0 || model || retainInactive
+      ? pkg.parse_svg3dx_with_params(
+          svgText,
+          paramsJson,
+          model ?? undefined,
+          retainInactive ? true : undefined
+        )
       : pkg.parse_svg3dx(svgText);
   return normalizeResult(raw);
 }

@@ -66,6 +66,11 @@ export interface CreateViewerOptions {
   params?: ParamMap;
   /** Prefer this s3dx:model id. */
   model?: string;
+  /**
+   * Keep skipped if/if-not branches in evaluation results (default false).
+   * Hosts that preview false branches (e.g. an editor) set this true.
+   */
+  retainInactive?: boolean;
   /** Render mode override: solid | wireframe | hidden-line */
   mode?: string;
   background?: number | string;
@@ -193,6 +198,7 @@ export class EmbedViewer {
   private params: ParamMap;
   private model?: string;
   private mode?: string;
+  private retainInactive = false;
   private lastResult: EvaluationResult | null = null;
   /** Bumped on every reload so overlapping glTF hydrates cannot commit stale scenes. */
   private reloadGeneration = 0;
@@ -258,6 +264,7 @@ export class EmbedViewer {
       : undefined;
     this.model = options.model;
     this.mode = options.mode;
+    this.retainInactive = options.retainInactive === true;
     this.onParamsChange = options.onParamsChange;
     this.onWarnings = options.onWarnings;
     this.onResult = options.onResult;
@@ -859,7 +866,9 @@ export class EmbedViewer {
       // Core refuses evaluation without svg3d="true"; still show 2D via svg2d + kernel.
       result = emptyEvaluationResult();
     } else {
-      result = await parseSvg(this.svgText, this.params, this.model);
+      result = await parseSvg(this.svgText, this.params, this.model, {
+        retainInactive: this.retainInactive,
+      });
     }
 
     if (gen !== this.reloadGeneration) {

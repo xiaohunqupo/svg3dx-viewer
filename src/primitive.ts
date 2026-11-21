@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import type { GeometryInstruction, Value } from "./types.js";
+import type { SceneBuildHooks } from "./sceneBuild.js";
 import { mat4x3ToMatrix4 } from "./transform.js";
 import { buildBoolOp } from "./bool.js";
 import { getPickData, setPickData } from "./pick.js";
@@ -136,8 +137,11 @@ export function buildThreeObject(
   inst: GeometryInstruction,
   mode: string = "solid",
   treePath?: string,
-  library: MaterialLibrary = new Map()
+  library: MaterialLibrary = new Map(),
+  hooks: SceneBuildHooks = {}
 ): THREE.Object3D | null {
+  if (hooks.acceptInstruction && !hooks.acceptInstruction(inst)) return null;
+
   switch (inst.type) {
     case "primitive": {
       const obj = buildPrimitive(
@@ -151,6 +155,7 @@ export function buildThreeObject(
       if (obj && treePath) {
         tagObject(obj, treePath, { nodeId: inst.node_id });
       }
+      if (obj) hooks.afterObjectBuilt?.(obj, inst);
       return obj;
     }
     case "group": {
@@ -167,7 +172,7 @@ export function buildThreeObject(
       for (let i = 0; i < inst.children.length; i++) {
         const child = inst.children[i]!;
         const childPath = groupPath ? `${groupPath}.${i}` : undefined;
-        const obj = buildThreeObject(child, mode, childPath, library);
+        const obj = buildThreeObject(child, mode, childPath, library, hooks);
         if (obj) {
           if (childPath) {
             const ownGroup = getPickData(obj)?.groupId;
@@ -183,18 +188,21 @@ export function buildThreeObject(
       }
       g.updateMatrix();
       g.applyMatrix4(mat4x3ToMatrix4(inst.transform.m));
+      hooks.afterObjectBuilt?.(g, inst);
       return g;
     }
     case "bool_op": {
       const obj = buildBoolOp(
         inst,
         mode,
-        (child, m) => buildThreeObject(child, m ?? mode, treePath, library),
+        (child, m) =>
+          buildThreeObject(child, m ?? mode, treePath, library, hooks),
         library
       );
       if (obj && treePath) {
         tagObject(obj, treePath, { nodeId: inst.node_id });
       }
+      if (obj) hooks.afterObjectBuilt?.(obj, inst);
       return obj;
     }
     case "instance": {
@@ -207,6 +215,7 @@ export function buildThreeObject(
         });
       }
       g.applyMatrix4(mat4x3ToMatrix4(inst.transform.m));
+      hooks.afterObjectBuilt?.(g, inst);
       return g;
     }
     default:

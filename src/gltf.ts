@@ -232,6 +232,11 @@ function applyDisplayMode(root: THREE.Object3D, mode: string): void {
   });
 }
 
+export type GltfHydrateHooks = {
+  /** After a glTF asset is attached under its placeholder. */
+  afterInstance?: (placeholder: THREE.Object3D, instance: THREE.Object3D) => void;
+};
+
 /**
  * Walk the scene graph and replace glTF placeholders with loaded assets.
  * Applies C at the instance root before authored element transform (already on placeholder).
@@ -241,7 +246,8 @@ export async function hydrateGltfPlaceholders(
   root: THREE.Object3D,
   documentBaseUrl: string | undefined,
   library: MaterialLibrary,
-  assetUrls?: GltfAssetUrlMap
+  assetUrls?: GltfAssetUrlMap,
+  hooks: GltfHydrateHooks = {}
 ): Promise<void> {
   const placeholders: THREE.Object3D[] = [];
   root.traverse((obj) => {
@@ -286,6 +292,7 @@ export async function hydrateGltfPlaceholders(
         bridge.userData[SVG3DX_GLTF_INSTANCE] = true;
         bridge.applyMatrix4(GLTF_Y_UP_TO_Z_UP);
         bridge.add(asset);
+        hooks.afterInstance?.(placeholder, bridge);
         placeholder.add(bridge);
       } catch (err) {
         console.warn(
