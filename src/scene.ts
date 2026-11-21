@@ -6,6 +6,7 @@ import { mat4x3ToMatrix4 } from "./transform.js";
 import { remapAsModelUse } from "./pick.js";
 import { materialLibraryFromResult } from "./materials.js";
 import { buildSvg2dObjects } from "./svg2d.js";
+import { hydrateGltfPlaceholders, type GltfAssetUrlMap } from "./gltf.js";
 import type { EvaluationResult, GeometryInstruction } from "./types.js";
 
 export interface FitCameraOptions {
@@ -50,11 +51,17 @@ export class Svg3dxViewer {
    * defs group is also kept hidden at the group's own transform.
    * Ordinary SVG 2D tags (text/rect/…) become XY-plane primitives when `svgText` is set.
    */
-  fromResult(
+  /**
+   * Bind evaluated geometry into the scene, then asynchronously load any
+   * `s3dx:gltf` placeholders (relative `href` resolved against `documentBaseUrl`).
+   */
+  async fromResult(
     result: EvaluationResult,
     modeOverride?: string,
-    svgText?: string
-  ): void {
+    svgText?: string,
+    documentBaseUrl?: string,
+    assetUrls?: GltfAssetUrlMap
+  ): Promise<void> {
     this.clear();
     for (const w of result.warnings) {
       console.warn("[svg3dx-viewer]", w);
@@ -115,6 +122,13 @@ export class Svg3dxViewer {
       const svg2d = buildSvg2dObjects(svgText);
       if (svg2d) this.root.add(svg2d);
     }
+
+    await hydrateGltfPlaceholders(
+      this.root,
+      documentBaseUrl,
+      library,
+      assetUrls
+    );
   }
 
   /**

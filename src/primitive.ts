@@ -12,7 +12,6 @@ import {
 import {
   buildExtrudeGeometry,
   buildLoftGeometry,
-  buildMeshGeometry,
   buildPrismGeometry,
   buildPyramidGeometry,
   buildRevolveGeometry,
@@ -23,6 +22,7 @@ import {
   toThreeLineMaterial,
   toThreeMaterial,
 } from "./materials.js";
+import { SVG3DX_GLTF_PENDING, type GltfPendingData } from "./gltf.js";
 
 function num(v: Value | undefined, fallback = 0): number {
   return typeof v === "number" ? v : fallback;
@@ -423,15 +423,20 @@ export function buildPrimitive(
       if (!geometry) return null;
       break;
     }
-    case "mesh": {
-      geometry = buildMeshGeometry(params);
-      if (!geometry) return null;
-      break;
-    }
-    case "triangles": {
-      geometry = buildTrianglesGeometry(params);
-      if (!geometry) return null;
-      break;
+    case "gltf": {
+      const hrefVal = param(params, "href");
+      const href =
+        typeof hrefVal === "string"
+          ? hrefVal
+          : hrefVal != null
+            ? String(hrefVal)
+            : "";
+      const g = new THREE.Group();
+      g.name = "gltf";
+      const pending: GltfPendingData = { href, styles, mode };
+      g.userData[SVG3DX_GLTF_PENDING] = pending;
+      g.applyMatrix4(mat4x3ToMatrix4(transform));
+      return g;
     }
     default:
       console.warn(`[svg3dx-three] unsupported primitive: ${kind}`);
@@ -758,33 +763,6 @@ function mergeBufferGeometries(
   out.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
   out.setIndex(indices);
   return out;
-}
-
-function buildTrianglesGeometry(
-  params: Record<string, Value>
-): THREE.BufferGeometry | null {
-  const points = params.point;
-  const index = params.index;
-  if (!Array.isArray(points) || !Array.isArray(index)) return null;
-
-  const positions = new Float32Array(points.map(Number));
-  const indices: number[] = [];
-  for (let i = 0; i + 2 < index.length; i += 3) {
-    // spec: 1-based indices
-    indices.push(Number(index[i]) - 1, Number(index[i + 1]) - 1, Number(index[i + 2]) - 1);
-  }
-  const geom = new THREE.BufferGeometry();
-  geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  geom.setIndex(indices);
-
-  const normalVal = param(params, "normal");
-  if (Array.isArray(normalVal)) {
-    const normals = new Float32Array(normalVal.map(Number));
-    geom.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
-  } else {
-    geom.computeVertexNormals();
-  }
-  return geom;
 }
 
 function meshFromGeometry(

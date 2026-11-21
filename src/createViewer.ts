@@ -128,6 +128,16 @@ export interface CreateViewerOptions {
    * 0 disables antialiasing (including FXAA).
    */
   antialias?: AntialiasLevel;
+  /**
+   * Base URL for resolving relative `s3dx:gltf` hrefs (and future assets).
+   * Defaults to `window.location.href` when unset.
+   */
+  documentBaseUrl?: string;
+  /**
+   * Local sidecar assets: relative path (e.g. `assets/foo.glb`) → fetchable URL.
+   * Takes precedence over documentBaseUrl for matching hrefs.
+   */
+  documentAssetUrls?: Record<string, string>;
 }
 
 /**
@@ -176,6 +186,10 @@ export class EmbedViewer {
   private kernelHost: HTMLElement;
   private leftChrome: HTMLElement | null = null;
   private svgText = "";
+  /** Document base URL for resolving relative `s3dx:gltf` / asset hrefs. */
+  private documentBaseUrl?: string;
+  /** Local sidecar map: relative href → blob:/http URL (studio). */
+  private documentAssetUrls?: Record<string, string>;
   private params: ParamMap;
   private model?: string;
   private mode?: string;
@@ -234,6 +248,10 @@ export class EmbedViewer {
   constructor(container: HTMLElement, options: CreateViewerOptions = {}) {
     this.container = container;
     this.params = { ...(options.params ?? {}) };
+    this.documentBaseUrl = options.documentBaseUrl;
+    this.documentAssetUrls = options.documentAssetUrls
+      ? { ...options.documentAssetUrls }
+      : undefined;
     this.model = options.model;
     this.mode = options.mode;
     this.onParamsChange = options.onParamsChange;
@@ -569,11 +587,41 @@ export class EmbedViewer {
 
   async loadSvg(
     svgText: string,
-    options: { fitCamera?: boolean } = {}
+    options: {
+      fitCamera?: boolean;
+      documentBaseUrl?: string;
+      documentAssetUrls?: Record<string, string>;
+    } = {}
   ): Promise<EvaluationResult> {
     this.svgText = svgText;
+    if (options.documentBaseUrl !== undefined) {
+      this.documentBaseUrl = options.documentBaseUrl;
+    }
+    if (options.documentAssetUrls !== undefined) {
+      this.documentAssetUrls = { ...options.documentAssetUrls };
+    }
     this.params = extractStyleParams(svgText);
     return this.reload({ fitCamera: options.fitCamera !== false });
+  }
+
+  /**
+   * Base URL for relative `s3dx:gltf` href resolution (SVG document base).
+   */
+  setDocumentBaseUrl(url: string | undefined): void {
+    this.documentBaseUrl = url;
+  }
+
+  getDocumentBaseUrl(): string | undefined {
+    return this.documentBaseUrl;
+  }
+
+  /** Local sidecar map for relative glTF hrefs (blob: URLs etc.). */
+  setDocumentAssetUrls(urls: Record<string, string> | undefined): void {
+    this.documentAssetUrls = urls ? { ...urls } : undefined;
+  }
+
+  getDocumentAssetUrls(): Record<string, string> | undefined {
+    return this.documentAssetUrls ? { ...this.documentAssetUrls } : undefined;
   }
 
   /**
@@ -582,9 +630,19 @@ export class EmbedViewer {
    */
   async applySvg(
     svgText: string,
-    options: { fitCamera?: boolean } = {}
+    options: {
+      fitCamera?: boolean;
+      documentBaseUrl?: string;
+      documentAssetUrls?: Record<string, string>;
+    } = {}
   ): Promise<EvaluationResult> {
     this.svgText = svgText;
+    if (options.documentBaseUrl !== undefined) {
+      this.documentBaseUrl = options.documentBaseUrl;
+    }
+    if (options.documentAssetUrls !== undefined) {
+      this.documentAssetUrls = { ...options.documentAssetUrls };
+    }
     this.params = extractStyleParams(svgText);
     return this.reload({ fitCamera: options.fitCamera === true });
   }
@@ -801,11 +859,13 @@ export class EmbedViewer {
 
     this.lastResult = result;
     if (result.warnings.length) this.onWarnings?.(result.warnings);
-    this.viewer.fromResult(
+    await this.viewer.fromResult(
       result,
       this.mode,
       // Always pass markup so ordinary SVG tags become XY-plane primitives.
-      this.svgText
+      this.svgText,
+      this.documentBaseUrl,
+      this.documentAssetUrls
     );
     this.syncWorldHelpersSize();
     this.syncKernelHost();

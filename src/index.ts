@@ -40,6 +40,13 @@ export {
 } from "./chromeLocale.js";
 export { Svg3dxViewer } from "./scene.js";
 export { buildThreeObject } from "./primitive.js";
+export {
+  GLTF_Y_UP_TO_Z_UP,
+  resolveGltfUrl,
+  hydrateGltfPlaceholders,
+  clearGltfCache,
+} from "./gltf.js";
+export type { GltfAssetUrlMap } from "./gltf.js";
 export { resolveActiveModel } from "./model.js";
 export { createViewer, EmbedViewer } from "./createViewer.js";
 export { PlaneHelper } from "./PlaneHelper.js";
