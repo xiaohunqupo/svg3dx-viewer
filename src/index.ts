@@ -42,6 +42,8 @@ export { Svg3dxViewer } from "./scene.js";
 export { buildThreeObject } from "./primitive.js";
 export {
   GLTF_Y_UP_TO_Z_UP,
+  SVG3DX_GLTF_PENDING,
+  SVG3DX_GLTF_INSTANCE,
   resolveGltfUrl,
   hydrateGltfPlaceholders,
   clearGltfCache,

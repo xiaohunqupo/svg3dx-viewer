@@ -20,22 +20,55 @@ export const GLTF_Y_UP_TO_Z_UP = new THREE.Matrix4().set(
 
 export const SVG3DX_GLTF_PENDING = "svg3dxGltfPending";
 
+/** Mark hydrated glTF subtrees so scene clear does not dispose shared cache GPU resources. */
+export const SVG3DX_GLTF_INSTANCE = "svg3dxGltfInstance";
+
 export interface GltfPendingData {
   href: string;
   styles: Record<string, Value>;
   mode: string;
 }
 
-const loader = new GLTFLoader();
 const cache = new Map<string, Promise<THREE.Group>>();
 
 export type GltfAssetUrlMap = Record<string, string>;
+
+function safeDecodeUri(s: string): string {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+}
+
+function lookupAssetUrl(
+  ref: string,
+  assetUrls?: GltfAssetUrlMap
+): string | undefined {
+  if (!assetUrls) return undefined;
+  const trimmed = ref.trim();
+  if (!trimmed) return undefined;
+  const decoded = safeDecodeUri(trimmed);
+  const noDot = trimmed.replace(/^\.\//, "");
+  const baseName = trimmed.split(/[/\\]/).pop() ?? trimmed;
+  return (
+    assetUrls[trimmed] ??
+    assetUrls[noDot] ??
+    assetUrls[decoded] ??
+    assetUrls[baseName] ??
+    assetUrls[`assets/${baseName}`]
+  );
+}
 
 /**
  * Resolve `href` for loading.
  * 1. Absolute / blob / http(s) IRIs as-is
  * 2. Else look up `assetUrls` (studio local sidecars: `assets/foo.glb` → blob:)
  * 3. Else resolve against document base URL (SVG-style)
+ *
+ * `documentBaseUrl === ""` means package / sidecar-only mode: do **not** fall
+ * back to `window.location.href`. Returns `""` when unresolved in that mode
+ * (caller should skip load).
  */
 export function resolveGltfUrl(
   href: string,
@@ -47,11 +80,13 @@ export function resolveGltfUrl(
   if (/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(trimmed)) {
     return trimmed;
   }
-  const mapped =
-    assetUrls?.[trimmed] ??
-    assetUrls?.[trimmed.replace(/^\.\//, "")] ??
-    assetUrls?.[decodeURIComponent(trimmed)];
+  const mapped = lookupAssetUrl(trimmed, assetUrls);
   if (mapped) return mapped;
+
+  // Explicit empty base: host supplies sidecars only (`.svg3dxz` / IndexedDB).
+  if (documentBaseUrl === "") {
+    return "";
+  }
 
   const base =
     documentBaseUrl && documentBaseUrl.length > 0
@@ -66,10 +101,40 @@ export function resolveGltfUrl(
   }
 }
 
-function loadGltfScene(url: string): Promise<THREE.Group> {
+/**
+ * Remap buffer / texture URLs that GLTFLoader resolves relative to a blob: or
+ * package entry so studio sidecars (and package-mode relatives) still load.
+ */
+function makeLoader(
+  documentBaseUrl: string | undefined,
+  assetUrls: GltfAssetUrlMap | undefined
+): GLTFLoader {
+  const manager = new THREE.LoadingManager();
+  manager.setURLModifier((url) => {
+    const mapped = lookupAssetUrl(url, assetUrls);
+    if (mapped) return mapped;
+
+    // Absolute blob/http that already resolved — keep unless package mode forbids.
+    if (/^(?:blob:|data:|https?:|\/\/)/i.test(url)) {
+      return url;
+    }
+
+    const resolved = resolveGltfUrl(url, documentBaseUrl, assetUrls);
+    return resolved || url;
+  });
+  return new GLTFLoader(manager);
+}
+
+function loadGltfScene(
+  url: string,
+  documentBaseUrl: string | undefined,
+  assetUrls: GltfAssetUrlMap | undefined
+): Promise<THREE.Group> {
   const hit = cache.get(url);
   if (hit) return hit.then((g) => g.clone(true));
-  const p = new Promise<THREE.Group>((resolve, reject) => {
+  const loader = makeLoader(documentBaseUrl, assetUrls);
+  let pending: Promise<THREE.Group>;
+  pending = new Promise<THREE.Group>((resolve, reject) => {
     loader.load(
       url,
       (gltf) => {
@@ -81,14 +146,19 @@ function loadGltfScene(url: string): Promise<THREE.Group> {
       undefined,
       (err) => reject(err)
     );
+  }).catch((err) => {
+    // Only drop *this* attempt — a newer load of the same URL may already be cached.
+    if (cache.get(url) === pending) cache.delete(url);
+    throw err;
   });
-  cache.set(url, p);
-  return p.then((g) => g.clone(true));
+  cache.set(url, pending);
+  return pending.then((g) => g.clone(true));
 }
 
 /**
  * Optional fill × material multiply onto glTF mesh base colors (§3.2.5 / §8.4).
- * Only applied when styles explicitly carry fill or material (not mere defaults).
+ * Only applied when styles explicitly carry fill or `--material` (not mere defaults).
+ * Fill is sRGB (same as ordinary primitives); glTF `color` is already linear.
  */
 function applyOptionalAppearance(
   root: THREE.Object3D,
@@ -96,11 +166,13 @@ function applyOptionalAppearance(
   library: MaterialLibrary
 ): void {
   const hasFill = styles.fill !== undefined;
-  const hasMaterial = styles.material !== undefined;
+  // Core stores presentation `material="…"` as `--material` (see materials.ts).
+  const hasMaterial = styles["--material"] !== undefined;
   if (!hasFill && !hasMaterial) return;
 
   const appearance = resolveAppearance(styles, library);
   const [fr, fg, fb, fa] = appearance.color;
+  const tint = new THREE.Color().setRGB(fr, fg, fb, THREE.SRGBColorSpace);
 
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
@@ -110,11 +182,8 @@ function applyOptionalAppearance(
     const cloned = src.map((mat) => {
       if (!mat || !("color" in mat)) return mat;
       const m = (mat as THREE.MeshStandardMaterial).clone();
-      if (m.color) {
-        m.color.r *= fr;
-        m.color.g *= fg;
-        m.color.b *= fb;
-      }
+      m.userData.svg3dxOwnedMaterial = true;
+      if (m.color) m.color.multiply(tint);
       if ("opacity" in m && typeof m.opacity === "number") {
         m.opacity *= fa;
         m.transparent = m.transparent || fa < 0.999;
@@ -130,9 +199,43 @@ function applyOptionalAppearance(
   });
 }
 
+/** Map viewer display mode onto hydrated glTF meshes (clone materials first). */
+function applyDisplayMode(root: THREE.Object3D, mode: string): void {
+  if (mode !== "wireframe" && mode !== "hidden-line") return;
+
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.geometry) return;
+    const src = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    const cloned = src.map((mat) => {
+      if (!mat) return mat;
+      const m = mat.clone();
+      m.userData.svg3dxOwnedMaterial = true;
+      if ("wireframe" in m) {
+        (m as THREE.MeshStandardMaterial).wireframe = mode === "wireframe";
+      }
+      m.needsUpdate = true;
+      return m;
+    });
+    mesh.material = Array.isArray(mesh.material) ? cloned : cloned[0]!;
+
+    if (mode === "hidden-line" && !mesh.userData.svg3dxGltfEdges) {
+      const edges = new THREE.EdgesGeometry(mesh.geometry);
+      const line = new THREE.LineSegments(
+        edges,
+        new THREE.LineBasicMaterial({ color: 0x222222 })
+      );
+      line.userData.svg3dxGltfEdges = true;
+      mesh.add(line);
+      mesh.userData.svg3dxGltfEdges = true;
+    }
+  });
+}
+
 /**
  * Walk the scene graph and replace glTF placeholders with loaded assets.
  * Applies C at the instance root before authored element transform (already on placeholder).
+ * `includeDefsWorld` copies also hydrate (cache clone; no second network fetch).
  */
 export async function hydrateGltfPlaceholders(
   root: THREE.Object3D,
@@ -168,11 +271,19 @@ export async function hydrateGltfPlaceholders(
         return;
       }
       const url = resolveGltfUrl(href, documentBaseUrl, assetUrls);
+      if (!url) {
+        console.warn(
+          `[svg3dx-viewer] s3dx:gltf '${href}' not in document asset map (package mode); skipped`
+        );
+        return;
+      }
       try {
-        const asset = await loadGltfScene(url);
+        const asset = await loadGltfScene(url, documentBaseUrl, assetUrls);
         applyOptionalAppearance(asset, data.styles ?? {}, library);
+        applyDisplayMode(asset, data.mode ?? "solid");
         const bridge = new THREE.Group();
         bridge.name = "gltf-y-up-to-z-up";
+        bridge.userData[SVG3DX_GLTF_INSTANCE] = true;
         bridge.applyMatrix4(GLTF_Y_UP_TO_Z_UP);
         bridge.add(asset);
         placeholder.add(bridge);
@@ -186,7 +297,11 @@ export async function hydrateGltfPlaceholders(
   );
 }
 
-/** Clear the in-memory glTF clone cache (e.g. on document close). */
+/**
+ * Drop cached load promises. Does **not** dispose GPU resources — clones share
+ * geometry/textures with the cache root; disposing would break live scenes.
+ * Scene clear still disposes per-instance tint materials (`svg3dxOwnedMaterial`).
+ */
 export function clearGltfCache(): void {
   cache.clear();
 }

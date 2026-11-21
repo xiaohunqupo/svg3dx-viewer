@@ -6,7 +6,12 @@ import { mat4x3ToMatrix4 } from "./transform.js";
 import { remapAsModelUse } from "./pick.js";
 import { materialLibraryFromResult } from "./materials.js";
 import { buildSvg2dObjects } from "./svg2d.js";
-import { hydrateGltfPlaceholders, type GltfAssetUrlMap } from "./gltf.js";
+import { recomputeBoolFallbacks } from "./bool.js";
+import {
+  hydrateGltfPlaceholders,
+  SVG3DX_GLTF_INSTANCE,
+  type GltfAssetUrlMap,
+} from "./gltf.js";
 import type { EvaluationResult, GeometryInstruction } from "./types.js";
 
 export interface FitCameraOptions {
@@ -129,6 +134,8 @@ export class Svg3dxViewer {
       library,
       assetUrls
     );
+    // Boolean + glTF was deferred (empty placeholders); retry CSG now meshes exist.
+    recomputeBoolFallbacks(this.root, mode, library);
   }
 
   /**
@@ -207,11 +214,30 @@ function expandVisibleBounds(box: THREE.Box3, object: THREE.Object3D): void {
   for (const child of object.children) expandVisibleBounds(box, child);
 }
 
+function underGltfInstance(obj: THREE.Object3D): boolean {
+  let p: THREE.Object3D | null = obj;
+  while (p) {
+    if (p.userData?.[SVG3DX_GLTF_INSTANCE]) return true;
+    p = p.parent;
+  }
+  return false;
+}
+
 function disposeObject(obj: THREE.Object3D): void {
   obj.traverse((c) => {
     const m = c as THREE.Mesh;
+    // glTF instances share geometry/textures with the loader cache — do not dispose
+    // those; only drop per-instance materials cloned for fill/--material tint.
+    if (underGltfInstance(c)) {
+      const mat = m.material;
+      if (!mat) return;
+      for (const item of Array.isArray(mat) ? mat : [mat]) {
+        if (item?.userData?.svg3dxOwnedMaterial) item.dispose();
+      }
+      return;
+    }
     if (m.geometry) m.geometry.dispose();
-    const mat = (m as THREE.Mesh).material;
+    const mat = m.material;
     if (mat) {
       const mats = Array.isArray(mat) ? mat : [mat];
       for (const item of mats) {

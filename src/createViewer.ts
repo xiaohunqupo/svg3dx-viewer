@@ -194,6 +194,10 @@ export class EmbedViewer {
   private model?: string;
   private mode?: string;
   private lastResult: EvaluationResult | null = null;
+  /** Bumped on every reload so overlapping glTF hydrates cannot commit stale scenes. */
+  private reloadGeneration = 0;
+  /** Serialize `fromResult` (async glTF hydrate) across overlapping reloads. */
+  private fromResultQueue: Promise<void> = Promise.resolve();
   /** True when the loaded document has no `svg3d="true"`. */
   private plainSvg = false;
   private displayModes: DisplayModeState = { kernel: true, svg3dx: true };
@@ -846,6 +850,7 @@ export class EmbedViewer {
   private async reload(
     options: { fitCamera?: boolean } = {}
   ): Promise<EvaluationResult> {
+    const gen = ++this.reloadGeneration;
     this.plainSvg = !isSvg3dxDocument(this.svgText);
     this.applyDisplayLayout();
 
@@ -857,16 +862,29 @@ export class EmbedViewer {
       result = await parseSvg(this.svgText, this.params, this.model);
     }
 
+    if (gen !== this.reloadGeneration) {
+      return this.lastResult ?? result;
+    }
+
     this.lastResult = result;
     if (result.warnings.length) this.onWarnings?.(result.warnings);
-    await this.viewer.fromResult(
-      result,
-      this.mode,
-      // Always pass markup so ordinary SVG tags become XY-plane primitives.
-      this.svgText,
-      this.documentBaseUrl,
-      this.documentAssetUrls
-    );
+    // Queue scene binds so an older hydrate cannot clear a newer one mid-flight.
+    const bind = this.fromResultQueue.then(async () => {
+      if (gen !== this.reloadGeneration) return;
+      await this.viewer.fromResult(
+        result,
+        this.mode,
+        // Always pass markup so ordinary SVG tags become XY-plane primitives.
+        this.svgText,
+        this.documentBaseUrl,
+        this.documentAssetUrls
+      );
+    });
+    this.fromResultQueue = bind.catch(() => {});
+    await bind;
+    if (gen !== this.reloadGeneration) {
+      return this.lastResult ?? result;
+    }
     this.syncWorldHelpersSize();
     this.syncKernelHost();
     this.syncChromeForDocument(result);
