@@ -192,18 +192,33 @@ export function buildThreeObject(
       return g;
     }
     case "bool_op": {
+      // Outer group carries `s3dx:transform` (gizmo target). CSG/operands stay
+      // in the bool-local frame — same contract as `group` / `if` wrappers.
+      const g = new THREE.Group();
+      g.name = `bool-${inst.op}`;
+      if (treePath) {
+        tagObject(g, treePath, { nodeId: inst.node_id });
+      }
       const obj = buildBoolOp(
         inst,
         mode,
-        (child, m) =>
-          buildThreeObject(child, m ?? mode, treePath, library, hooks),
+        (child, m, i) =>
+          buildThreeObject(
+            child,
+            m ?? mode,
+            treePath ? `${treePath}.${i}` : undefined,
+            library,
+            hooks
+          ),
         library
       );
-      if (obj && treePath) {
-        tagObject(obj, treePath, { nodeId: inst.node_id });
+      if (obj) g.add(obj);
+      g.updateMatrix();
+      if (inst.transform?.m?.length === 12) {
+        g.applyMatrix4(mat4x3ToMatrix4(inst.transform.m));
       }
-      if (obj) hooks.afterObjectBuilt?.(obj, inst);
-      return obj;
+      hooks.afterObjectBuilt?.(g, inst);
+      return g;
     }
     case "instance": {
       const g = new THREE.Group();

@@ -718,13 +718,18 @@ export class EmbedViewer {
    */
   async setExtraDefs(
     ids: string[],
-    options: { fitCamera?: boolean; reload?: boolean } = {}
+    options: { fitCamera?: boolean; reload?: boolean; force?: boolean } = {}
   ): Promise<EvaluationResult | null> {
     const next = [...new Set(ids.filter(Boolean))];
     const same =
       next.length === this.extraDefs.length &&
       next.every((id, i) => id === this.extraDefs[i]);
-    if (same && this.lastResult && options.reload !== false) {
+    if (
+      same &&
+      this.lastResult &&
+      options.reload !== false &&
+      options.force !== true
+    ) {
       return this.lastResult;
     }
     this.extraDefs = next;

@@ -42,6 +42,7 @@ export type GeometryInstruction =
       op: "union" | "subtract" | "intersect";
       styles: Record<string, Value>;
       operands: GeometryInstruction[];
+      transform: { m: number[] };
     }
   | {
       type: "instance";

@@ -10,7 +10,8 @@ import { SVG3DX_GLTF_PENDING } from "./gltf.js";
 
 type BuildFn = (
   inst: GeometryInstruction,
-  mode?: string
+  mode?: string,
+  operandIndex?: number
 ) => THREE.Object3D | null;
 
 type BoolOpName = "union" | "subtract" | "intersect";
@@ -32,8 +33,9 @@ export function buildBoolOp(
   library: MaterialLibrary = new Map()
 ): THREE.Object3D | null {
   const operands: THREE.Object3D[] = [];
-  for (const child of inst.operands) {
-    const obj = build(child, mode);
+  for (let i = 0; i < inst.operands.length; i++) {
+    const child = inst.operands[i]!;
+    const obj = build(child, mode, i);
     if (obj) operands.push(obj);
   }
   if (operands.length === 0) return null;
