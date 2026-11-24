@@ -365,6 +365,25 @@ export function buildPrimitive(
       if (!geometry) return null;
       break;
     }
+    case "point": {
+      // Positioning-point marker for editors (not a boolean solid).
+      const at = vec3(param(params, "at"));
+      geometry = new THREE.SphereGeometry(4, 12, 8);
+      geometry.translate(at.x, at.y, at.z);
+      const appearance = resolveAppearance(styles, library);
+      const [r, g, b, a] = appearance.color;
+      const mesh = new THREE.Mesh(
+        geometry,
+        new THREE.MeshBasicMaterial({
+          color: new THREE.Color().setRGB(r, g, b, THREE.SRGBColorSpace),
+          depthTest: true,
+          transparent: a < 1 - 1e-6,
+          opacity: a,
+        })
+      );
+      mesh.applyMatrix4(mat4x3ToMatrix4(transform));
+      return mesh;
+    }
     case "line": {
       geometry = buildLineGeometry(param(params, "from"), param(params, "to"));
       if (!geometry) return null;

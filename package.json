@@ -1,6 +1,6 @@
 {
   "name": "svg3dx-viewer",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "svg3dx 查看器组件 — embeddable three.js viewer with editable external params",
   "type": "module",
   "main": "dist/index.js",
@@ -28,7 +28,7 @@
     "prepublishOnly": "npm run build:lib"
   },
   "dependencies": {
-    "svg3dx-ffi-wasm": "^0.1.2",
+    "svg3dx-ffi-wasm": "^0.2.0",
     "three-bvh-csg": "^0.0.16"
   },
   "peerDependencies": {
