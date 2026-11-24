@@ -189,6 +189,7 @@ export class EmbedViewer {
   setHelperFrame(source: THREE.Object3D | null): void {
     this.helperFrame = source;
     this.syncHelperFrame();
+    this.invalidate();
   }
 
   private stage: HTMLElement;
@@ -223,6 +224,12 @@ export class EmbedViewer {
   private viewHelperClickEnabled = true;
   private raf = 0;
   private resizeRaf = 0;
+  /**
+   * When true, keep requesting frames even if the camera is idle
+   * (e.g. future skeletal / clip animation). Hosts toggle via
+   * `setContinuousRender`.
+   */
+  private continuousRender = false;
   /** Re-fit once the canvas has a real size (initial layout often 0×0 / tiny). */
   private pendingFit = false;
   /**
@@ -316,13 +323,17 @@ export class EmbedViewer {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     // OrbitControls event map is `never` under some @types/three versions.
-    (
-      this.controls as unknown as {
-        addEventListener: (type: string, listener: () => void) => void;
-      }
-    ).addEventListener("start", () => {
+    const controlsEvents = this.controls as unknown as {
+      addEventListener: (type: string, listener: () => void) => void;
+    };
+    controlsEvents.addEventListener("start", () => {
       this.autoFit = false;
       this.pendingFit = false;
+      // Damping applies inside update(); kick the on-demand loop.
+      this.invalidate();
+    });
+    controlsEvents.addEventListener("change", () => {
+      this.invalidate();
     });
 
     // Official three.js editor-style XYZ orientation gizmo (top-right).
@@ -378,7 +389,9 @@ export class EmbedViewer {
         const dx = event.clientX - down.x;
         const dy = event.clientY - down.y;
         if (dx * dx + dy * dy > PICK_DRAG_PX * PICK_DRAG_PX) return;
-        this.viewHelper.handleClick(event);
+        if (this.viewHelper.handleClick(event)) {
+          this.invalidate();
+        }
       };
       this.renderer.domElement.addEventListener(
         "pointerdown",
@@ -560,21 +573,52 @@ export class EmbedViewer {
     (this as unknown as { _ro: ResizeObserver })._ro = ro;
 
     this.resize();
-    const tick = () => {
-      const delta = this.clock.getDelta();
-      // Skip OrbitControls while ViewHelper owns the camera, otherwise lookAt
-      // fights the axis-home animation every frame.
-      if (this.viewHelperVisible && this.viewHelper.animating) {
-        this.viewHelper.update(delta);
-      } else {
-        this.controls.update();
-      }
-      // Keep plane/axes at a stable screen fraction while orbiting/zooming.
-      this.syncWorldHelpersSize();
-      this.paint();
-      this.raf = requestAnimationFrame(tick);
-    };
-    tick();
+    // Demand-driven: idle static scenes do not keep a RAF loop alive.
+    this.invalidate();
+  }
+
+  /**
+   * Schedule a redraw on the next animation frame.
+   * Safe to call often; coalesces to one pending frame.
+   * Hosts that mutate overlay scenes / gizmos should call this.
+   */
+  invalidate(): void {
+    if (this.raf) return;
+    this.raf = requestAnimationFrame(() => this.tick());
+  }
+
+  /**
+   * Keep rendering every frame while `enabled` (e.g. skeletal / clip animation).
+   * Off by default — static models only redraw on camera / content changes.
+   */
+  setContinuousRender(enabled: boolean): void {
+    this.continuousRender = enabled;
+    if (enabled) this.invalidate();
+  }
+
+  getContinuousRender(): boolean {
+    return this.continuousRender;
+  }
+
+  private tick(): void {
+    this.raf = 0;
+    // Clamp so a long idle gap does not jump ViewHelper home animation.
+    const delta = Math.min(this.clock.getDelta(), 0.1);
+    // Skip OrbitControls while ViewHelper owns the camera, otherwise lookAt
+    // fights the axis-home animation every frame.
+    let keepGoing = this.continuousRender;
+    if (this.viewHelperVisible && this.viewHelper.animating) {
+      this.viewHelper.update(delta);
+      keepGoing = true;
+    }
+    if (!(this.viewHelperVisible && this.viewHelper.animating)) {
+      // update() returns true while damping / user motion still changes the camera.
+      if (this.controls.update()) keepGoing = true;
+    }
+    // Keep plane/axes at a stable screen fraction while orbiting/zooming.
+    this.syncWorldHelpersSize();
+    this.paint();
+    if (keepGoing) this.invalidate();
   }
 
   /**
@@ -583,6 +627,7 @@ export class EmbedViewer {
    */
   setSelectedObjects(objects: THREE.Object3D[]): void {
     this.outlinePass.selectedObjects = objects;
+    this.invalidate();
   }
 
   getSelectedObjects(): THREE.Object3D[] {
@@ -596,11 +641,13 @@ export class EmbedViewer {
   addOverlayScene(scene: THREE.Scene): void {
     if (this.overlayScenes.includes(scene)) return;
     this.overlayScenes.push(scene);
+    this.invalidate();
   }
 
   removeOverlayScene(scene: THREE.Scene): void {
     const i = this.overlayScenes.indexOf(scene);
     if (i >= 0) this.overlayScenes.splice(i, 1);
+    this.invalidate();
   }
 
   async loadSvg(
@@ -752,6 +799,7 @@ export class EmbedViewer {
     const bg = new THREE.Color(color);
     this.scene.background = bg;
     this.viewHelper.adaptToBackground(bg);
+    this.invalidate();
   }
 
   /**
@@ -869,6 +917,7 @@ export class EmbedViewer {
       this.displayModeBar?.setState(this.displayModes);
       this.applyDisplayLayout();
     }
+    this.invalidate();
   }
 
   private normalizeAntialias(level: number): AntialiasLevel {
@@ -950,6 +999,7 @@ export class EmbedViewer {
       this.pendingFit = framed && (w < 32 || h < 32);
     }
     this.onResult?.(result);
+    this.invalidate();
     return result;
   }
 

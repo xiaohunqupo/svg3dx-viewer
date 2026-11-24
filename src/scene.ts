@@ -227,6 +227,11 @@ const _fitBox = new THREE.Box3();
 /** Bounds of `object` and its visible descendants. Hidden branches are left out. */
 function expandVisibleBounds(box: THREE.Box3, object: THREE.Object3D): void {
   if (!object.visible) return;
+  // Editor overlays (point billboards, etc.) must not bias framing.
+  if (object.userData?.skipFitBounds) {
+    for (const child of object.children) expandVisibleBounds(box, child);
+    return;
+  }
   const geometry = (object as THREE.Mesh).geometry;
   if (geometry) {
     if (!geometry.boundingBox) geometry.computeBoundingBox();
