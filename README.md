@@ -61,6 +61,8 @@ viewer.setParams({ H: 120 }); // only direct :root literals are accepted
 
 API: `createViewer` / `loadSvg` / `setParams` / `getParams` / `setModel` / `ParamPanel`.
 
+Animation (draft 0.2 SMIL-shaped subset): documents with `<s3dx:animate>` / `<s3dx:animateTransform>` auto-play after `loadSvg`. Controls: `setAnimationPlaying` / `getAnimationPlaying` / `resetAnimationClock` / `hasDocumentAnimations`.
+
 Viewport chrome is toggleable (on by default):
 
 - `modelBar` — top-left Model dropdown

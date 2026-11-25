@@ -7,16 +7,39 @@ import {
   type ViewerLocale,
 } from "./chromeLocale.js";
 
+export type ParamRowState = {
+  /** Has a root-scope param animation track. */
+  animated?: boolean;
+  /** Explicit external pin (outranks animation). */
+  pinned?: boolean;
+  /** Document animation clock is playing. */
+  playing?: boolean;
+};
+
 export interface ParamsBarOptions {
   locale?: ViewerLocale;
   onChange?: (params: ParamMap) => void;
+  /** Explicit pin for one key (outranks animation even when value equals `:root`). */
+  onPin?: (name: string, value: string | number | boolean) => void;
+  /** Clear a single external pin (resume animation / DOM for that key). */
+  onUnpin?: (name: string) => void;
+  /** Toggle document animation play / pause (from the row play icon). */
+  onTogglePlay?: () => void;
   /** Start expanded (default false). */
   expanded?: boolean;
 }
 
+/** Inline SVGs — same style as SettingsBar gear (`currentColor`, 24 viewBox). */
+const ICON_PLAY =
+  '<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
+const ICON_PAUSE =
+  '<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>';
+const ICON_PIN =
+  '<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg>';
+
 /**
  * Collapsible Params overlay for the embed viewer — sits under the Model bar.
- * Lists `:root` external params; edits trigger `onChange` for live re-eval.
+ * Lists `:root` whitelist params; edits pin external overrides (§2.5).
  */
 export class ParamsBar {
   readonly el: HTMLElement;
@@ -25,16 +48,29 @@ export class ParamsBar {
   private chevron: HTMLSpanElement;
   private body: HTMLElement;
   private params: ParamMap = {};
+  private rowState: Record<string, ParamRowState> = {};
   private lastDescs: ParamDesc[] | undefined;
   private onChange?: (params: ParamMap) => void;
+  private onPin?: (name: string, value: string | number | boolean) => void;
+  private onUnpin?: (name: string) => void;
+  private onTogglePlay?: () => void;
   private expanded: boolean;
   private hasParams = false;
   private locale: ViewerLocale;
   private userVisible = true;
   private documentAllowed = true;
+  private inputByName = new Map<string, HTMLInputElement>();
+  /** Play / pause / pin status control (one per animated row). */
+  private statusBtnByName = new Map<string, HTMLButtonElement>();
+  private focusedName: string | null = null;
+  /** Input string at focus — blur commits only when it changed. */
+  private focusSnapshot = new Map<string, string>();
 
   constructor(parent: HTMLElement, options: ParamsBarOptions = {}) {
     this.onChange = options.onChange;
+    this.onPin = options.onPin;
+    this.onUnpin = options.onUnpin;
+    this.onTogglePlay = options.onTogglePlay;
     this.expanded = options.expanded === true;
     this.locale = options.locale ?? detectViewerLocale();
     ensureChromeStyles();
@@ -106,8 +142,7 @@ export class ParamsBar {
   setLocale(locale: ViewerLocale): void {
     this.locale = locale;
     this.applyLocale();
-    // Refresh empty-state / tooltip copy for the new locale.
-    this.setParams(this.params, this.lastDescs);
+    this.setParams(this.params, this.lastDescs, this.rowState);
   }
 
   setExpanded(expanded: boolean): void {
@@ -119,16 +154,11 @@ export class ParamsBar {
     return this.expanded;
   }
 
-  /**
-   * User/host visibility preference.
-   * Document sync may still hide the bar for plain SVG.
-   */
   setVisible(visible: boolean): void {
     this.userVisible = visible;
     this.applyVisibility();
   }
 
-  /** Called by EmbedViewer when the document allows / forbids the bar. */
   setDocumentAllowed(allowed: boolean): void {
     this.documentAllowed = allowed;
     this.applyVisibility();
@@ -139,24 +169,54 @@ export class ParamsBar {
       this.userVisible && this.documentAllowed ? "flex" : "none";
   }
 
-  setParams(params: ParamMap, descs?: ParamDesc[]): void {
-    this.params = { ...params };
-    this.lastDescs = descs;
+  /**
+   * @param committed seed ∪ explicit pins (what `onChange` will emit)
+   * @param liveDisplay optional live samples for unpinned animated keys (inputs only)
+   */
+  setParams(
+    committed: ParamMap,
+    descs?: ParamDesc[],
+    rowState?: Record<string, ParamRowState>,
+    liveDisplay?: ParamMap
+  ): void {
     const s = chromeStrings(this.locale);
+    const shown: ParamMap = { ...committed, ...liveDisplay };
     const list =
       descs ??
-      Object.keys(this.params)
+      Object.keys(shown)
         .sort()
         .map((name) => ({
           name,
-          value: this.params[name]!,
+          value: shown[name]!,
           kind:
-            typeof this.params[name] === "number"
+            typeof shown[name] === "number"
               ? ("number" as const)
-              : typeof this.params[name] === "boolean"
+              : typeof shown[name] === "boolean"
                 ? ("boolean" as const)
                 : ("string" as const),
         }));
+
+    const nextState = rowState ?? {};
+    if (
+      this.lastDescs &&
+      descs &&
+      paramsFingerprint(this.params) === paramsFingerprint(committed) &&
+      descsFingerprint(this.lastDescs) === descsFingerprint(descs) &&
+      stateFingerprint(this.rowState) === stateFingerprint(nextState)
+    ) {
+      this.params = { ...committed };
+      this.rowState = { ...nextState };
+      this.lastDescs = descs;
+      this.applyLiveToInputs(shown);
+      this.applyRowChrome();
+      return;
+    }
+
+    this.params = { ...committed };
+    this.rowState = { ...nextState };
+    this.lastDescs = descs;
+    this.inputByName.clear();
+    this.statusBtnByName.clear();
 
     this.hasParams = list.length > 0;
     this.body.replaceChildren();
@@ -168,13 +228,40 @@ export class ParamsBar {
       this.body.appendChild(empty);
     } else {
       for (const d of list) {
-        this.body.appendChild(this.makeRow(d));
+        this.body.appendChild(this.makeRow(d, shown[d.name]));
       }
     }
 
     this.headerBtn.title = this.hasParams
       ? s.paramsCount(list.length)
       : s.noEditableParams;
+  }
+
+  /**
+   * Update input DOM from live samples without rebuilding rows or poisoning
+   * committed `this.params` (avoids accidental pins when editing another key).
+   */
+  updateLiveValues(
+    liveDisplay: ParamMap,
+    rowState?: Record<string, ParamRowState>
+  ): void {
+    if (rowState) this.rowState = { ...rowState };
+    this.applyLiveToInputs(liveDisplay);
+    this.applyRowChrome();
+  }
+
+  private applyLiveToInputs(shown: ParamMap): void {
+    for (const [name, input] of this.inputByName) {
+      if (name === this.focusedName) continue;
+      if (!(name in shown)) continue;
+      const v = shown[name];
+      if (input.type === "checkbox") {
+        input.checked = Boolean(v);
+      } else {
+        const next = String(v ?? "");
+        if (input.value !== next) input.value = next;
+      }
+    }
   }
 
   private applyLocale(): void {
@@ -189,55 +276,145 @@ export class ParamsBar {
     this.el.remove();
   }
 
-  private makeRow(d: ParamDesc): HTMLElement {
-    const row = document.createElement("label");
+  private applyRowChrome(): void {
+    const s = chromeStrings(this.locale);
+    for (const [name, btn] of this.statusBtnByName) {
+      const st = this.rowState[name] ?? {};
+      let mode = "";
+      let icon = "";
+      let title = "";
+      if (st.pinned && st.animated) {
+        mode = "unpin";
+        icon = ICON_PIN;
+        title = s.paramPinnedOverAnim;
+      } else if (st.animated && st.playing) {
+        mode = "pause";
+        icon = ICON_PLAY;
+        title = s.paramAnimatedPlay;
+      } else if (st.animated) {
+        mode = "play";
+        icon = ICON_PAUSE;
+        title = s.paramAnimatedPause;
+      }
+      const hide = !mode;
+      if (btn.hidden !== hide) btn.hidden = hide;
+      // Avoid rewriting innerHTML every anim frame — that cancels clicks.
+      if (btn.dataset.mode !== mode) {
+        btn.dataset.mode = mode;
+        btn.innerHTML = icon;
+        btn.title = title;
+      } else if (btn.title !== title) {
+        btn.title = title;
+      }
+    }
+  }
+
+  private makeRow(
+    d: ParamDesc,
+    shownValue?: string | number | boolean
+  ): HTMLElement {
+    const row = document.createElement("div");
     row.style.cssText =
-      "display:grid;grid-template-columns:minmax(3.5rem,auto) 1fr;gap:6px;align-items:center;padding-top:6px;";
+      "display:grid;grid-template-columns:minmax(3.5rem,auto) 1fr auto;gap:6px;align-items:center;padding-top:6px;";
+
+    const nameWrap = document.createElement("span");
+    nameWrap.style.cssText =
+      "display:inline-flex;align-items:center;gap:4px;min-width:0;";
 
     const name = document.createElement("span");
     name.textContent = d.name;
     name.style.cssText =
       "font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
     name.title = d.name;
-    row.appendChild(name);
+
+    nameWrap.append(name);
+    row.appendChild(nameWrap);
+
+    const initial = shownValue ?? this.params[d.name] ?? d.value ?? "";
 
     if (d.kind === "boolean") {
       const input = document.createElement("input");
       input.type = "checkbox";
-      input.checked = Boolean(this.params[d.name]);
+      input.checked = Boolean(initial);
       input.addEventListener("change", () => {
-        this.params[d.name] = input.checked;
-        this.emitChange();
+        this.commitValue(d.name, input.checked);
       });
+      input.addEventListener("focus", () => {
+        this.focusedName = d.name;
+      });
+      input.addEventListener("blur", () => {
+        if (this.focusedName === d.name) this.focusedName = null;
+      });
+      this.inputByName.set(d.name, input);
       row.appendChild(input);
     } else {
       const input = document.createElement("input");
       input.type = d.kind === "number" ? "number" : "text";
-      input.value = String(this.params[d.name] ?? d.value ?? "");
+      input.value = String(initial);
       input.style.cssText = "width:100%;min-width:0;padding:2px 6px;";
-      const commit = () => {
+      const parseInput = (): string | number => {
         const raw = input.value;
-        this.params[d.name] =
-          d.kind === "number" && raw !== "" && !Number.isNaN(Number(raw))
-            ? Number(raw)
-            : raw;
-        this.emitChange();
+        return d.kind === "number" && raw !== "" && !Number.isNaN(Number(raw))
+          ? Number(raw)
+          : raw;
       };
-      input.addEventListener("change", commit);
+      const commitFromInput = () => {
+        this.commitValue(d.name, parseInput());
+        this.focusSnapshot.set(d.name, input.value);
+      };
+      input.addEventListener("change", commitFromInput);
       input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
           e.preventDefault();
-          commit();
+          commitFromInput();
           input.blur();
         }
       });
+      input.addEventListener("focus", () => {
+        this.focusedName = d.name;
+        this.focusSnapshot.set(d.name, input.value);
+      });
+      input.addEventListener("blur", () => {
+        if (this.focusedName === d.name) this.focusedName = null;
+        // Spinner / IME: commit when the field text changed during focus.
+        if (input.value !== this.focusSnapshot.get(d.name)) {
+          commitFromInput();
+        }
+        this.focusSnapshot.delete(d.name);
+      });
+      this.inputByName.set(d.name, input);
       row.appendChild(input);
     }
 
+    const status = document.createElement("button");
+    status.type = "button";
+    status.className = "svg3dx-params-bar__icon-btn";
+    status.hidden = true;
+    status.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const mode = status.dataset.mode;
+      if (mode === "unpin") this.onUnpin?.(d.name);
+      else if (mode === "pause" || mode === "play") this.onTogglePlay?.();
+    });
+    this.statusBtnByName.set(d.name, status);
+    row.appendChild(status);
+
+    this.applyRowChrome();
     return row;
   }
 
-  private emitChange(): void {
+  private commitValue(
+    name: string,
+    value: string | number | boolean
+  ): void {
+    this.params[name] = value;
+    // Explicit pin outranks animation even when value equals the `:root` seed.
+    if (this.onPin) {
+      this.onPin(name, value);
+      this.onChange?.({ ...this.params });
+      return;
+    }
     this.onChange?.({ ...this.params });
   }
 
@@ -246,4 +423,25 @@ export class ParamsBar {
     this.chevron.textContent = this.expanded ? "▾" : "▸";
     this.headerBtn.setAttribute("aria-expanded", this.expanded ? "true" : "false");
   }
+}
+
+function paramsFingerprint(params: ParamMap): string {
+  return Object.keys(params)
+    .sort()
+    .map((k) => `${k}=${String(params[k])}`)
+    .join("\n");
+}
+
+function descsFingerprint(descs: ParamDesc[]): string {
+  return descs.map((d) => `${d.name}:${d.kind}`).join("|");
+}
+
+function stateFingerprint(state: Record<string, ParamRowState>): string {
+  return Object.keys(state)
+    .sort()
+    .map((k) => {
+      const s = state[k]!;
+      return `${k}:${s.animated ? 1 : 0}${s.pinned ? 1 : 0}${s.playing ? 1 : 0}`;
+    })
+    .join("|");
 }

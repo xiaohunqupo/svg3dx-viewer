@@ -3,8 +3,15 @@ import { getPickData, matchesHighlight } from "./pick.js";
 import { SELECTION_EDGE } from "./selectionStyle.js";
 
 type LineColorBackup = {
-  material: Material & { color?: Color };
+  material: Material & {
+    color?: Color;
+    depthTest?: boolean;
+    needsUpdate?: boolean;
+  };
   color: Color;
+  depthTest: boolean;
+  line: Line;
+  renderOrder: number;
 };
 
 /**
@@ -95,20 +102,40 @@ export class SelectionHighlight {
     const mats = Array.isArray(line.material)
       ? line.material
       : [line.material];
+    const prevOrder = line.renderOrder;
     for (const mat of mats) {
       if (!mat || !("color" in mat) || !(mat as { color?: Color }).color) continue;
-      const colored = mat as Material & { color: Color };
+      const colored = mat as Material & {
+        color: Color;
+        depthTest?: boolean;
+        needsUpdate?: boolean;
+      };
       this.lineBackups.push({
         material: colored,
         color: colored.color.clone(),
+        depthTest: colored.depthTest !== false,
+        line,
+        renderOrder: prevOrder,
       });
       colored.color.copy(SELECTION_EDGE);
+      // 2-point lines are often coaxial with solids (e.g. axis + cylinder) and
+      // disappear under the mesh; draw the accent on top like a CAD overlay.
+      colored.depthTest = false;
+      colored.needsUpdate = true;
     }
+    line.renderOrder = 998;
   }
 
   private restoreLines(): void {
+    const seen = new Set<Line>();
     for (const b of this.lineBackups) {
       b.material.color?.copy(b.color);
+      b.material.depthTest = b.depthTest;
+      b.material.needsUpdate = true;
+      if (!seen.has(b.line)) {
+        b.line.renderOrder = b.renderOrder;
+        seen.add(b.line);
+      }
     }
     this.lineBackups = [];
   }

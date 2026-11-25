@@ -41,8 +41,9 @@ function isDirectParamValue(raw: string): boolean {
 }
 
 /**
- * Seed external params from `:root` direct literals only
- * (matches svg3dx external-param whitelist).
+ * Read `:root` direct literals (external-param whitelist / UI seed).
+ * These are DOM defaults — not host overrides. Spec §2.3: only
+ * explicitly supplied external params outrank animation samples.
  */
 export function extractStyleParams(svgText: string): ParamMap {
   const out: ParamMap = {};
@@ -60,6 +61,46 @@ export function extractStyleParams(svgText: string): ParamMap {
       if (name in out) continue;
       out[name] = parseLiteral(raw);
     }
+  }
+  return out;
+}
+
+export function paramValuesEqual(
+  a: string | number | boolean | undefined,
+  b: string | number | boolean | undefined
+): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  if (typeof a === "number" && typeof b === "number") return a === b;
+  return String(a) === String(b);
+}
+
+/**
+ * Drop overrides whose keys left the `:root` whitelist (after document edit).
+ */
+export function pruneOverridesToSeed(
+  overrides: ParamMap,
+  seed: ParamMap
+): ParamMap {
+  const out: ParamMap = {};
+  for (const [k, v] of Object.entries(overrides)) {
+    if (k in seed) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * ParamsBar / ParamPanel emit the full display map. Keep only values that
+ * differ from the DOM seed so animation can still drive unpinned keys.
+ */
+export function externalOverridesFromDisplay(
+  display: ParamMap,
+  seed: ParamMap
+): ParamMap {
+  const out: ParamMap = {};
+  for (const [k, v] of Object.entries(display)) {
+    if (!(k in seed)) continue;
+    if (!paramValuesEqual(v, seed[k])) out[k] = v;
   }
   return out;
 }

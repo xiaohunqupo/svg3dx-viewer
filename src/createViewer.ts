@@ -17,7 +17,7 @@ import {
 import { Svg3dxViewer } from "./scene.js";
 import { ParamPanel } from "./ParamPanel.js";
 import { ModelBar } from "./ModelBar.js";
-import { ParamsBar } from "./ParamsBar.js";
+import { ParamsBar, type ParamRowState } from "./ParamsBar.js";
 import { DisplayModeBar, type DisplayModeState } from "./DisplayModeBar.js";
 import {
   SettingsBar,
@@ -33,7 +33,12 @@ import {
   emptyEvaluationResult,
   isSvg3dxDocument,
 } from "./documentKind.js";
-import { extractStyleParams, listParams } from "./params.js";
+import {
+  extractStyleParams,
+  externalOverridesFromDisplay,
+  listParams,
+  pruneOverridesToSeed,
+} from "./params.js";
 import {
   OUTLINE_OVERLAY_FS_ALPHA,
   SELECTION_EDGE,
@@ -44,6 +49,8 @@ import {
 import { initWasm, parseSvg, type ParamMap } from "./wasm.js";
 import type { EvaluationResult } from "./types.js";
 import { PlaneHelper } from "./PlaneHelper.js";
+import { AnimationRuntime } from "./animation/runtime.js";
+import type { AnimationDesc } from "./animation/types.js";
 
 // Before any Object3D / lookAt / controls: svg3dx Z-up.
 applyWorldUp();
@@ -201,7 +208,13 @@ export class EmbedViewer {
   private documentBaseUrl?: string;
   /** Local sidecar map: relative href → blob:/http URL (studio). */
   private documentAssetUrls?: Record<string, string>;
+  /**
+   * Explicit host / UI external overrides only (spec §2.3 highest priority).
+   * Must not be seeded from `:root` — that would pin DOM defaults above animation.
+   */
   private params: ParamMap;
+  /** `:root` direct literals for ParamsBar display / whitelist. */
+  private seedParams: ParamMap = {};
   private model?: string;
   private mode?: string;
   private retainInactive = false;
@@ -230,6 +243,12 @@ export class EmbedViewer {
    * `setContinuousRender`.
    */
   private continuousRender = false;
+  /** SMIL-shaped animation clock (draft 0.2 §10). */
+  private readonly animation = new AnimationRuntime();
+  /** Last sampled param overrides from the animation clock. */
+  private animParamOverrides: ParamMap = {};
+  /** Coalesce animation-driven reloads to one in-flight request. */
+  private animReloadQueued = false;
   /** Re-fit once the canvas has a real size (initial layout often 0×0 / tiny). */
   private pendingFit = false;
   /**
@@ -477,13 +496,27 @@ export class EmbedViewer {
 
     this.viewer = new Svg3dxViewer(this.scene);
 
-    const onParamsEdited = (p: ParamMap) => {
+    const onParamPanelEdited = (p: ParamMap) => {
+      // External host ParamPanel: full-map setParams (diff vs `:root` seeds).
       void this.setParams(p);
       this.onParamsChange?.(p);
     };
+    const onParamsBarEdited = (p: ParamMap) => {
+      // Notification only — pins go through onPin so seed-equal values stick.
+      this.onParamsChange?.(p);
+    };
+    const onParamPin = (name: string, value: string | number | boolean) => {
+      void this.pinParam(name, value);
+    };
+    const onParamUnpin = (name: string) => {
+      void this.unpinParam(name);
+    };
+    const onTogglePlay = () => {
+      this.setAnimationPlaying(!this.getAnimationPlaying());
+    };
 
     this.paramPanel = options.paramsEl
-      ? new ParamPanel(options.paramsEl, { onChange: onParamsEdited })
+      ? new ParamPanel(options.paramsEl, { onChange: onParamPanelEdited })
       : null;
 
     const wantSettingsBar = options.settingsBar !== false;
@@ -561,8 +594,11 @@ export class EmbedViewer {
 
     this.paramsBar = buildParamsBar
       ? new ParamsBar(this.leftChrome!, {
+          onPin: onParamPin,
+          onUnpin: onParamUnpin,
+          onTogglePlay,
           locale: this.locale,
-          onChange: onParamsEdited,
+          onChange: onParamsBarEdited,
         })
       : null;
     this.paramsBar?.setVisible(showParamsBar);
@@ -600,6 +636,53 @@ export class EmbedViewer {
     return this.continuousRender;
   }
 
+  /** Start / pause SMIL-shaped document animations (param + transform). */
+  setAnimationPlaying(playing: boolean): void {
+    this.animation.setPlaying(playing);
+    if (playing && this.animation.hasAnimations) {
+      this.setContinuousRender(true);
+    } else if (!this.animation.hasAnimations) {
+      this.setContinuousRender(false);
+    }
+    this.syncLiveParamDisplay();
+    this.invalidate();
+  }
+
+  getAnimationPlaying(): boolean {
+    return this.animation.isPlaying;
+  }
+
+  /** Reset the document animation clock to t=0. */
+  resetAnimationClock(): void {
+    this.animation.resetClock();
+    this.animParamOverrides = {};
+    this.invalidate();
+  }
+
+  hasDocumentAnimations(): boolean {
+    return this.animation.hasAnimations;
+  }
+
+  getAnimationTime(): number {
+    return this.animation.getDocTime();
+  }
+
+  /** Scrub document animation time (seconds). Applies samples immediately (works while paused). */
+  setAnimationTime(timeSecs: number): void {
+    if (!this.animation.hasAnimations) return;
+    this.animation.setDocTime(timeSecs);
+    const frame = this.animation.sampleAtDocTime();
+    this.animParamOverrides = frame.paramOverrides;
+    this.syncLiveParamDisplay();
+    if (frame.paramsChanged) this.queueAnimReload();
+    this.invalidate();
+  }
+
+  /** Timeline length for the scrubber (seconds). */
+  getAnimationDuration(): number {
+    return this.animation.getLoopDuration();
+  }
+
   private tick(): void {
     this.raf = 0;
     // Clamp so a long idle gap does not jump ViewHelper home animation.
@@ -615,10 +698,40 @@ export class EmbedViewer {
       // update() returns true while damping / user motion still changes the camera.
       if (this.controls.update()) keepGoing = true;
     }
+    this.applyAnimationFrame(delta);
     // Keep plane/axes at a stable screen fraction while orbiting/zooming.
     this.syncWorldHelpersSize();
     this.paint();
-    if (keepGoing) this.invalidate();
+    if (keepGoing || this.animation.isPlaying) this.invalidate();
+  }
+
+  private applyAnimationFrame(delta: number): void {
+    const frame = this.animation.applyFrame(delta);
+    if (!frame) return;
+    if (frame.paramsChanged) {
+      this.animParamOverrides = frame.paramOverrides;
+      this.syncLiveParamDisplay();
+      // Pinned keys already win in eval — skip reload when nothing unpinned moved.
+      if (this.hasUnpinnedAnimParamUpdate(frame.paramOverrides)) {
+        this.queueAnimReload();
+      }
+    }
+  }
+
+  /** True when an animation sample changed for a key that is not externally pinned. */
+  private hasUnpinnedAnimParamUpdate(overrides: ParamMap): boolean {
+    for (const k of Object.keys(overrides)) {
+      if (!Object.prototype.hasOwnProperty.call(this.params, k)) return true;
+    }
+    return false;
+  }
+
+  private queueAnimReload(): void {
+    if (this.animReloadQueued || !this.svgText || this.plainSvg) return;
+    this.animReloadQueued = true;
+    void this.reload({ fitCamera: false, fromAnimation: true }).finally(() => {
+      this.animReloadQueued = false;
+    });
   }
 
   /**
@@ -665,7 +778,11 @@ export class EmbedViewer {
     if (options.documentAssetUrls !== undefined) {
       this.documentAssetUrls = { ...options.documentAssetUrls };
     }
-    this.params = extractStyleParams(svgText);
+    this.seedParams = extractStyleParams(svgText);
+    // Fresh document: drop prior external pins (DOM seeds are not external).
+    this.params = {};
+    this.animParamOverrides = {};
+    this.animation.clear();
     return this.reload({ fitCamera: options.fitCamera !== false });
   }
 
@@ -708,18 +825,61 @@ export class EmbedViewer {
     if (options.documentAssetUrls !== undefined) {
       this.documentAssetUrls = { ...options.documentAssetUrls };
     }
-    this.params = extractStyleParams(svgText);
+    this.seedParams = extractStyleParams(svgText);
+    // Keep user pins that still exist on `:root`; do not re-elevate DOM seeds.
+    this.params = pruneOverridesToSeed(this.params, this.seedParams);
+    this.animParamOverrides = {};
+    // Soft document replace: re-discover animations and restart the clock.
+    this.animation.clear();
     return this.reload({ fitCamera: options.fitCamera === true });
   }
 
   async setParams(params: ParamMap): Promise<EvaluationResult | null> {
-    this.params = { ...params };
+    // Host API full map: values that differ from `:root` seeds become pins.
+    this.params =
+      Object.keys(this.seedParams).length > 0
+        ? externalOverridesFromDisplay(params, this.seedParams)
+        : { ...params };
+    if (!this.svgText) return null;
+    return this.reload({ fitCamera: false });
+  }
+
+  /**
+   * Pin one external override (ParamsBar edit). Always pins — including when
+   * the value equals the `:root` seed — and pauses playback if that key is
+   * animation-driven so the scene visibly stops.
+   */
+  async pinParam(
+    name: string,
+    value: string | number | boolean
+  ): Promise<EvaluationResult | null> {
+    this.params = { ...this.params, [name]: value };
+    if (this.rootAnimatedParamNames().has(name)) {
+      this.setAnimationPlaying(false);
+    }
+    // Drop stale anim sample for this key so merge cannot race a late frame.
+    if (name in this.animParamOverrides) {
+      const nextAnim = { ...this.animParamOverrides };
+      delete nextAnim[name];
+      this.animParamOverrides = nextAnim;
+    }
+    this.syncLiveParamDisplay();
+    if (!this.svgText) return null;
+    return this.reload({ fitCamera: false });
+  }
+
+  /** Drop an explicit external pin so animation / DOM can drive the key again. */
+  async unpinParam(name: string): Promise<EvaluationResult | null> {
+    if (!(name in this.params)) return this.lastResult;
+    const next = { ...this.params };
+    delete next[name];
+    this.params = next;
     if (!this.svgText) return null;
     return this.reload({ fitCamera: false });
   }
 
   getParams(): ParamMap {
-    return { ...this.params };
+    return { ...this.seedParams, ...this.params };
   }
 
   /**
@@ -942,7 +1102,7 @@ export class EmbedViewer {
   }
 
   private async reload(
-    options: { fitCamera?: boolean } = {}
+    options: { fitCamera?: boolean; fromAnimation?: boolean } = {}
   ): Promise<EvaluationResult> {
     const gen = ++this.reloadGeneration;
     this.plainSvg = !isSvg3dxDocument(this.svgText);
@@ -953,7 +1113,12 @@ export class EmbedViewer {
       // Core refuses evaluation without svg3d="true"; still show 2D via svg2d + kernel.
       result = emptyEvaluationResult();
     } else {
-      result = await parseSvg(this.svgText, this.params, this.model, {
+      // Spec §2.3: external (host/UI params) > animation samples > DOM.
+      const evalParams: ParamMap = {
+        ...this.animParamOverrides,
+        ...this.params,
+      };
+      result = await parseSvg(this.svgText, evalParams, this.model, {
         retainInactive: this.retainInactive,
         extraDefs: this.extraDefs,
       });
@@ -982,9 +1147,14 @@ export class EmbedViewer {
     if (gen !== this.reloadGeneration) {
       return this.lastResult ?? result;
     }
+    this.syncAnimationsAfterBind(result, !options.fromAnimation);
     this.syncWorldHelpersSize();
     this.syncKernelHost();
-    this.syncChromeForDocument(result);
+    // Param anim reloads every sampled frame — rebuilding ParamsBar would steal
+    // focus and make the list uneditable while the clock runs.
+    if (!options.fromAnimation) {
+      this.syncChromeForDocument(result);
+    }
     if (options.fitCamera !== false) {
       this.autoFit = true;
       // Plain SVG → ViewHelper +Z home; svg3dx → CAD iso. No other differences.
@@ -1003,10 +1173,93 @@ export class EmbedViewer {
     return result;
   }
 
+  /**
+   * Install animation descriptors from eval result and (re)bind transform targets.
+   * @param resetClock when true (document load), restart t=0 and auto-play.
+   */
+  private syncAnimationsAfterBind(
+    result: EvaluationResult,
+    resetClock: boolean
+  ): void {
+    const descs = (result.animations ?? []) as AnimationDesc[];
+    if (resetClock) {
+      this.animation.reset(descs);
+      this.animParamOverrides = {};
+      if (this.animation.hasAnimations) {
+        this.setContinuousRender(true);
+      }
+    } else if (!this.animation.hasAnimations && descs.length) {
+      // First time we see animations without a prior reset (e.g. hot path).
+      this.animation.reset(descs);
+      this.setContinuousRender(true);
+    }
+    this.animation.bindTransforms(this.viewer.root);
+  }
+
+  /** Root-scope `s3dx:animate` attribute names (bare, no `--`). */
+  private rootAnimatedParamNames(): Set<string> {
+    const out = new Set<string>();
+    const anims = (this.lastResult?.animations ?? []) as AnimationDesc[];
+    for (const a of anims) {
+      if (a.kind !== "param" || !a.root_scope) continue;
+      out.add(a.attribute_name.replace(/^--+/, ""));
+    }
+    return out;
+  }
+
+  private paramRowState(): Record<string, ParamRowState> {
+    const animated = this.rootAnimatedParamNames();
+    const state: Record<string, ParamRowState> = {};
+    for (const name of new Set([
+      ...Object.keys(this.seedParams),
+      ...Object.keys(this.params),
+      ...animated,
+    ])) {
+      state[name] = {
+        animated: animated.has(name),
+        pinned: Object.prototype.hasOwnProperty.call(this.params, name),
+        playing: this.animation.isPlaying,
+      };
+    }
+    return state;
+  }
+
+  /** seed ∪ explicit pins — safe to emit from ParamsBar without pinning live samples. */
+  private committedParamDisplay(): ParamMap {
+    return { ...this.seedParams, ...this.params };
+  }
+
+  /**
+   * Live chrome values: committed pins, plus animation samples for unpinned
+   * animated keys (§2.3 / §2.5).
+   */
+  private effectiveParamDisplay(): ParamMap {
+    const animated = this.rootAnimatedParamNames();
+    const live: ParamMap = { ...this.committedParamDisplay() };
+    for (const [k, v] of Object.entries(this.animParamOverrides)) {
+      if (
+        animated.has(k) &&
+        !Object.prototype.hasOwnProperty.call(this.params, k)
+      ) {
+        live[k] = v;
+      }
+    }
+    return live;
+  }
+
+  private syncLiveParamDisplay(): void {
+    this.paramsBar?.updateLiveValues(
+      this.effectiveParamDisplay(),
+      this.paramRowState()
+    );
+  }
+
   private syncParamsUi(result: EvaluationResult | null): void {
-    const descs = listParams(this.params, result);
-    this.paramPanel?.setParams(this.params, descs);
-    this.paramsBar?.setParams(this.params, descs);
+    const committed = this.committedParamDisplay();
+    const live = this.effectiveParamDisplay();
+    const descs = listParams(committed, result);
+    this.paramPanel?.setParams(committed, descs);
+    this.paramsBar?.setParams(committed, descs, this.paramRowState(), live);
   }
 
   private syncModelBar(result: EvaluationResult | null): void {
@@ -1219,6 +1472,9 @@ export class EmbedViewer {
   }
 
   dispose(): void {
+    this.animation.clear();
+    this.animParamOverrides = {};
+    this.setContinuousRender(false);
     cancelAnimationFrame(this.raf);
     if (this.resizeRaf) {
       cancelAnimationFrame(this.resizeRaf);

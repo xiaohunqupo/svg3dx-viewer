@@ -61,6 +61,8 @@ viewer.setParams({ H: 120 }); // only direct :root literals are accepted
 
 API：`createViewer` / `loadSvg` / `setParams` / `getParams` / `setModel` / `ParamPanel`。
 
+动画（草案 0.2 SMIL 形子集）：含 `<s3dx:animate>` / `<s3dx:animateTransform>` 的文档在 `loadSvg` 后自动播放。控制：`setAnimationPlaying` / `getAnimationPlaying` / `resetAnimationClock` / `hasDocumentAnimations`。
+
 视口控件均可开关（默认开启）：
 
 - `modelBar` — 左上角 Model 下拉

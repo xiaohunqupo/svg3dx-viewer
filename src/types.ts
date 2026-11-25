@@ -9,6 +9,8 @@ export interface EvaluationResult {
   materials?: MaterialDesc[];
   active_model: string | null;
   warnings: string[];
+  /** SMIL-shaped animation descriptors (draft 0.2 §10). */
+  animations?: import("./animation/types.js").AnimationDesc[];
 }
 
 export interface MaterialDesc {

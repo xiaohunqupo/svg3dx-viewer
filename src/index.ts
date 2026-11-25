@@ -28,7 +28,13 @@ export type { FitCameraOptions, SceneBuildHooks } from "./scene.js";
 export type { ViewerLocale, ChromeStrings } from "./chromeLocale.js";
 
 export { initWasm, parseSvg } from "./wasm.js";
-export { extractStyleParams, listParams } from "./params.js";
+export {
+  extractStyleParams,
+  externalOverridesFromDisplay,
+  listParams,
+  paramValuesEqual,
+  pruneOverridesToSeed,
+} from "./params.js";
 export { ParamPanel } from "./ParamPanel.js";
 export { ModelBar } from "./ModelBar.js";
 export { ParamsBar } from "./ParamsBar.js";
@@ -51,6 +57,20 @@ export {
 export type { GltfAssetUrlMap, GltfHydrateHooks } from "./gltf.js";
 export { resolveActiveModel } from "./model.js";
 export { createViewer, EmbedViewer } from "./createViewer.js";
+export type {
+  AnimationDesc,
+  AnimationTiming,
+  AnimateTransformType,
+} from "./animation/types.js";
+export { AnimationRuntime, findObjectByGroupId } from "./animation/runtime.js";
+export {
+  animationProgress,
+  calcModeWeight,
+  parseDurationSecs,
+  parseRepeat,
+  sampleAnimateTransformMatrix,
+  sampleScalar,
+} from "./animation/sample.js";
 export { PlaneHelper } from "./PlaneHelper.js";
 export {
   sectionFrame,

@@ -41,6 +41,33 @@ const CSS = `
   border-top: 1px solid var(--svg3dx-chrome-divider, #e5eaf0);
 }
 
+.svg3dx-params-bar__icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.75;
+}
+.svg3dx-params-bar__icon-btn:hover {
+  opacity: 1;
+  background: var(--svg3dx-chrome-hover, rgba(15, 23, 42, 0.04));
+}
+.svg3dx-params-bar__icon-btn svg {
+  display: block;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+}
+
 .svg3dx-kernel-host {
   position: relative;
   min-width: 0;
@@ -61,12 +88,14 @@ const CSS = `
 }
 `;
 
-/** Inject once; safe to call from multiple chrome widgets. */
+/** Inject / refresh chrome CSS; safe to call from multiple widgets. */
 export function ensureChromeStyles(): void {
   if (typeof document === "undefined") return;
-  if (document.getElementById(STYLE_ID)) return;
-  const el = document.createElement("style");
-  el.id = STYLE_ID;
+  let el = document.getElementById(STYLE_ID) as HTMLStyleElement | null;
+  if (!el) {
+    el = document.createElement("style");
+    el.id = STYLE_ID;
+    document.head.appendChild(el);
+  }
   el.textContent = CSS;
-  document.head.appendChild(el);
 }

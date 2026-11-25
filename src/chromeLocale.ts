@@ -10,6 +10,12 @@ export interface ChromeStrings {
   svg3dx: string;
   noEditableParams: string;
   paramsCount: (n: number) => string;
+  /** Param row driven by s3dx:animate (playing) — click to pause. */
+  paramAnimatedPlay: string;
+  /** Param row driven by s3dx:animate (paused) — click to play. */
+  paramAnimatedPause: string;
+  /** Param row pinned over an animation track — click to clear. */
+  paramPinnedOverAnim: string;
   settings: string;
   settingsButton: string;
   modelBar: string;
@@ -30,6 +36,9 @@ const ZH: ChromeStrings = {
   svg3dx: "svg3dx",
   noEditableParams: "无可编辑参数",
   paramsCount: (n) => `${n} 个参数`,
+  paramAnimatedPlay: "动画播放中 — 点击暂停",
+  paramAnimatedPause: "动画已暂停 — 点击播放",
+  paramPinnedOverAnim: "已覆盖动画 — 点击取消覆盖",
   settings: "设置",
   settingsButton: "显示设置按键",
   modelBar: "显示模型列表",
@@ -50,6 +59,9 @@ const EN: ChromeStrings = {
   svg3dx: "svg3dx",
   noEditableParams: "No editable params",
   paramsCount: (n) => `${n} param${n === 1 ? "" : "s"}`,
+  paramAnimatedPlay: "Animating — click to pause",
+  paramAnimatedPause: "Paused — click to play",
+  paramPinnedOverAnim: "Overriding animation — click to clear",
   settings: "Settings",
   settingsButton: "Show settings button",
   modelBar: "Show model list",
