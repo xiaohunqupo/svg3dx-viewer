@@ -35,6 +35,13 @@ export class AnimationRuntime {
     this.playing = this.descs.length > 0;
   }
 
+  /** Refresh descriptors without resetting the clock (e.g. id / timing edits). */
+  replaceDescs(descs: AnimationDesc[] | undefined | null): void {
+    this.descs = Array.isArray(descs) ? descs.slice() : [];
+    this.lastParamKey = "";
+    if (this.descs.length === 0) this.playing = false;
+  }
+
   clear(): void {
     this.descs = [];
     this.transformBindings = [];
@@ -71,7 +78,7 @@ export class AnimationRuntime {
   }
 
   /**
-   * Scrubber length: longest single cycle among animations (indefinite uses `dur`).
+   * Scrubber length: longest span among animations (indefinite uses one `dur`).
    * Falls back to 1s when none parse.
    */
   getLoopDuration(): number {
@@ -87,6 +94,37 @@ export class AnimationRuntime {
       max = Math.max(max, begin + dur * cycles);
     }
     return max > 0 ? max : 1;
+  }
+
+  /** True when any track has indefinite `repeat` (`0`). */
+  hasIndefiniteLoop(): boolean {
+    for (const desc of this.descs) {
+      if (parseRepeat(desc.timing.repeat).indefinite) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Map absolute document time onto the scrubber range `[0, getLoopDuration()]`.
+   * Timeline always runs 0 → end (AE / Premiere style). Indefinite preview
+   * loops wrap to 0; each clip stays quiet until its own `begin`.
+   * Finite timelines clamp at the end.
+   */
+  toScrubberTime(docTime: number = this.docTime): number {
+    const axis = this.getLoopDuration();
+    if (axis <= 0) return 0;
+    const t = Math.max(0, docTime);
+    if (t < axis) return t;
+    if (!this.hasIndefiniteLoop()) return axis;
+    return t % axis;
+  }
+
+  /** Preview-loop the composition back to 0 (not to each clip's begin). */
+  private wrapPlayingClock(): void {
+    if (!this.hasIndefiniteLoop()) return;
+    const axis = this.getLoopDuration();
+    if (axis <= 1e-9 || this.docTime < axis) return;
+    this.docTime = this.docTime % axis;
   }
 
   /** Re-bind transform targets after a scene rebuild. */
@@ -117,7 +155,10 @@ export class AnimationRuntime {
   ): { paramOverrides: ParamMap; paramsChanged: boolean } | null {
     if (this.descs.length === 0) return null;
     if (!this.playing && !options.force) return null;
-    if (this.playing) this.docTime += Math.max(0, deltaSecs);
+    if (this.playing) {
+      this.docTime += Math.max(0, deltaSecs);
+      this.wrapPlayingClock();
+    }
     return this.sampleAtDocTime();
   }
 

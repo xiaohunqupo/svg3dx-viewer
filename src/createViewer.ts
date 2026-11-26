@@ -641,7 +641,8 @@ export class EmbedViewer {
     this.animation.setPlaying(playing);
     if (playing && this.animation.hasAnimations) {
       this.setContinuousRender(true);
-    } else if (!this.animation.hasAnimations) {
+    } else {
+      // Demand-driven while paused; OrbitControls still invalidate on interact.
       this.setContinuousRender(false);
     }
     this.syncLiveParamDisplay();
@@ -652,11 +653,9 @@ export class EmbedViewer {
     return this.animation.isPlaying;
   }
 
-  /** Reset the document animation clock to t=0. */
+  /** Reset the document animation clock to t=0 and re-sample. */
   resetAnimationClock(): void {
-    this.animation.resetClock();
-    this.animParamOverrides = {};
-    this.invalidate();
+    this.setAnimationTime(0);
   }
 
   hasDocumentAnimations(): boolean {
@@ -665,6 +664,15 @@ export class EmbedViewer {
 
   getAnimationTime(): number {
     return this.animation.getDocTime();
+  }
+
+  /**
+   * Playhead position on the scrubber (`[0, getAnimationDuration()]`).
+   * Composition time always starts at 0; clips with delayed `begin` simply
+   * stay inactive until then (same as AE / Premiere).
+   */
+  getAnimationScrubberTime(): number {
+    return this.animation.toScrubberTime();
   }
 
   /** Scrub document animation time (seconds). Applies samples immediately (works while paused). */
@@ -709,18 +717,28 @@ export class EmbedViewer {
     const frame = this.animation.applyFrame(delta);
     if (!frame) return;
     if (frame.paramsChanged) {
+      const prev = this.animParamOverrides;
       this.animParamOverrides = frame.paramOverrides;
       this.syncLiveParamDisplay();
       // Pinned keys already win in eval — skip reload when nothing unpinned moved.
-      if (this.hasUnpinnedAnimParamUpdate(frame.paramOverrides)) {
+      // Removed/cleared unpinned samples (t < begin, fill=remove) must re-eval.
+      if (this.shouldReloadForAnimParams(prev, frame.paramOverrides)) {
         this.queueAnimReload();
       }
     }
   }
 
-  /** True when an animation sample changed for a key that is not externally pinned. */
-  private hasUnpinnedAnimParamUpdate(overrides: ParamMap): boolean {
-    for (const k of Object.keys(overrides)) {
+  /**
+   * True when sampled overrides changed for an unpinned key, including a key
+   * disappearing (inactive before `begin` / after fill=remove).
+   */
+  private shouldReloadForAnimParams(prev: ParamMap, next: ParamMap): boolean {
+    for (const k of Object.keys(next)) {
+      if (Object.prototype.hasOwnProperty.call(this.params, k)) continue;
+      if (prev[k] !== next[k]) return true;
+    }
+    for (const k of Object.keys(prev)) {
+      if (k in next) continue;
       if (!Object.prototype.hasOwnProperty.call(this.params, k)) return true;
     }
     return false;
@@ -828,10 +846,11 @@ export class EmbedViewer {
     this.seedParams = extractStyleParams(svgText);
     // Keep user pins that still exist on `:root`; do not re-elevate DOM seeds.
     this.params = pruneOverridesToSeed(this.params, this.seedParams);
-    this.animParamOverrides = {};
-    // Soft document replace: re-discover animations and restart the clock.
-    this.animation.clear();
-    return this.reload({ fitCamera: options.fitCamera === true });
+    // Soft in-session edit: keep the animation clock (scrub / key-drag / pause).
+    return this.reload({
+      fitCamera: options.fitCamera === true,
+      fromAnimation: true,
+    });
   }
 
   async setParams(params: ParamMap): Promise<EvaluationResult | null> {
@@ -841,7 +860,8 @@ export class EmbedViewer {
         ? externalOverridesFromDisplay(params, this.seedParams)
         : { ...params };
     if (!this.svgText) return null;
-    return this.reload({ fitCamera: false });
+    // Keep animation clock; only geometry / params change.
+    return this.reload({ fitCamera: false, fromAnimation: true });
   }
 
   /**
@@ -865,7 +885,8 @@ export class EmbedViewer {
     }
     this.syncLiveParamDisplay();
     if (!this.svgText) return null;
-    return this.reload({ fitCamera: false });
+    // Preserve scrub time; stay paused after pin.
+    return this.reload({ fitCamera: false, fromAnimation: true });
   }
 
   /** Drop an explicit external pin so animation / DOM can drive the key again. */
@@ -875,7 +896,7 @@ export class EmbedViewer {
     delete next[name];
     this.params = next;
     if (!this.svgText) return null;
-    return this.reload({ fitCamera: false });
+    return this.reload({ fitCamera: false, fromAnimation: true });
   }
 
   getParams(): ParamMap {
@@ -1192,8 +1213,18 @@ export class EmbedViewer {
       // First time we see animations without a prior reset (e.g. hot path).
       this.animation.reset(descs);
       this.setContinuousRender(true);
+    } else {
+      // Keep clock; refresh ids / timing from the latest eval.
+      this.animation.replaceDescs(descs);
     }
     this.animation.bindTransforms(this.viewer.root);
+    // Re-apply samples after bind (paused scrub / soft applySvg must not
+    // leave transforms at static eval matrices).
+    if (this.animation.hasAnimations) {
+      const frame = this.animation.sampleAtDocTime();
+      this.animParamOverrides = frame.paramOverrides;
+      this.syncLiveParamDisplay();
+    }
   }
 
   /** Root-scope `s3dx:animate` attribute names (bare, no `--`). */

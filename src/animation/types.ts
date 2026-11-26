@@ -17,6 +17,8 @@ export type AnimationDesc =
   | {
       kind: "param";
       attribute_name: string;
+      /** Animation element `id` when present. */
+      id?: string | null;
       parent_id?: string | null;
       parent_tag: string;
       root_scope: boolean;
@@ -26,6 +28,8 @@ export type AnimationDesc =
       kind: "transform";
       attribute_name: string;
       transform_type: AnimateTransformType;
+      /** Animation element `id` when present. */
+      id?: string | null;
       parent_id?: string | null;
       parent_tag: string;
       timing: AnimationTiming;
