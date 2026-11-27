@@ -3,7 +3,8 @@ import { Font, FontLoader } from "three/addons/loaders/FontLoader.js";
 import { SVGLoader } from "three/addons/loaders/SVGLoader.js";
 import helvetikerRegular from "three/examples/fonts/helvetiker_regular.typeface.json";
 
-const S3DX_NS = "urn:s3dx:draft:0.1";
+const S3DX_NS_0_1 = "urn:s3dx:draft:0.1";
+const S3DX_NS_0_2 = "urn:s3dx:draft:0.2";
 
 let defaultFont: Font | null = null;
 
@@ -63,7 +64,8 @@ interface StyleCtx {
 }
 
 function isS3dx(el: Element): boolean {
-  if ((el.namespaceURI ?? "") === S3DX_NS) return true;
+  const ns = el.namespaceURI ?? "";
+  if (ns === S3DX_NS_0_1 || ns === S3DX_NS_0_2) return true;
   return el.tagName.toLowerCase().startsWith("s3dx:");
 }
 
