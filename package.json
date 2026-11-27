@@ -1,6 +1,6 @@
 {
   "name": "svg3dx-viewer",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "svg3dx 查看器组件 — embeddable three.js viewer with editable external params",
   "type": "module",
   "main": "dist/index.js",
