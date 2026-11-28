@@ -1426,6 +1426,15 @@ export class EmbedViewer {
     this.paint();
   }
 
+  /**
+   * Draw the current frame immediately.
+   * Hosts that read the canvas (preview snapshots) must call this in the
+   * same turn as `toDataURL` — the WebGL buffer is not preserved.
+   */
+  renderNow(): void {
+    this.paint();
+  }
+
   private paint(): void {
     // Ensure full-canvas viewport after ViewHelper (or any pass) may have changed it.
     const el = this.renderer.domElement;
