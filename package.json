@@ -22,7 +22,7 @@
   "scripts": {
     "build:wasm": "node ./scripts/build-wasm.mjs",
     "build": "npm run build:wasm && tsc -p tsconfig.json",
-    "build:lib": "tsc -p tsconfig.json",
+    "build:lib": "tsc -p tsconfig.json && node ./scripts/copy-vendor.mjs",
     "build:embed": "vite build --config examples/embed/vite.config.ts",
     "dev": "npm run build:wasm && vite --config examples/embed/vite.config.ts",
     "preview": "vite preview --config examples/embed/vite.config.ts",
