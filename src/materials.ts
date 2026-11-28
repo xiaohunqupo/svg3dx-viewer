@@ -47,14 +47,72 @@ export function materialLibraryFromResult(
   return map;
 }
 
-/** Parse RGBA from a style value (vector, number, or space-separated string). */
+function fallbackRgba(
+  fallback: [number, number, number, number]
+): [number, number, number, number] {
+  return [...fallback] as [number, number, number, number];
+}
+
+/** `#RGB` / `#RGBA` / `#RRGGBB` / `#RRGGBBAA`, or `rgb()` / `rgba()`. */
+function parseSvgColor(raw: string): [number, number, number, number] | null {
+  const s = raw.trim();
+  if (s.startsWith("#")) {
+    const body = s.slice(1);
+    if (!/^[0-9a-fA-F]+$/.test(body)) return null;
+    const byte = (hex: string) => parseInt(hex, 16) / 255;
+    if (body.length === 3 || body.length === 4) {
+      return [
+        byte(body[0]! + body[0]!),
+        byte(body[1]! + body[1]!),
+        byte(body[2]! + body[2]!),
+        body.length === 4 ? byte(body[3]! + body[3]!) : 1,
+      ];
+    }
+    if (body.length === 6 || body.length === 8) {
+      return [
+        byte(body.slice(0, 2)),
+        byte(body.slice(2, 4)),
+        byte(body.slice(4, 6)),
+        body.length === 8 ? byte(body.slice(6, 8)) : 1,
+      ];
+    }
+    return null;
+  }
+  const fn = /^rgba?\(\s*([^)]+)\s*\)$/i.exec(s);
+  if (!fn) return null;
+  const parts = fn[1]!.split(/[\s,\/]+/).filter(Boolean);
+  if (parts.length < 3) return null;
+  const channel = (part: string): number => {
+    if (part.endsWith("%")) return Number(part.slice(0, -1)) / 100;
+    return Number(part) / 255;
+  };
+  const r = channel(parts[0]!);
+  const g = channel(parts[1]!);
+  const b = channel(parts[2]!);
+  let a = 1;
+  if (parts.length >= 4) {
+    const part = parts[3]!;
+    a = part.endsWith("%") ? Number(part.slice(0, -1)) / 100 : Number(part);
+  }
+  if (![r, g, b, a].every((n) => Number.isFinite(n))) return null;
+  return [r, g, b, a];
+}
+
+/** Parse RGBA from a style value (vector, number, space-separated, or SVG color). */
 export function parseRgba(
   value: Value | undefined,
   fallback: [number, number, number, number]
 ): [number, number, number, number] {
-  if (value == null) return [...fallback] as [number, number, number, number];
+  const parsed = tryParseRgba(value);
+  return parsed ?? fallbackRgba(fallback);
+}
+
+function tryParseRgba(
+  value: Value | undefined
+): [number, number, number, number] | null {
+  if (value == null) return null;
   if (typeof value === "number") {
-    return [value, value, value, 1];
+    return Number.isFinite(value) ? [value, value, value, 1] : null;
   }
   if (typeof value === "string") {
     const parts = value.trim().split(/\s+/).map(Number);
@@ -64,7 +122,7 @@ export function parseRgba(
     if (parts.length === 3 && parts.every((n) => Number.isFinite(n))) {
       return [parts[0]!, parts[1]!, parts[2]!, 1];
     }
-    return [...fallback] as [number, number, number, number];
+    return parseSvgColor(value);
   }
   if (Array.isArray(value)) {
     const nums = value.map(Number);
@@ -75,7 +133,7 @@ export function parseRgba(
       return [nums[0]!, nums[1]!, nums[2]!, 1];
     }
   }
-  return [...fallback] as [number, number, number, number];
+  return null;
 }
 
 function parseOpacity(value: Value | undefined): number {
@@ -129,9 +187,16 @@ export function resolveMaterialDesc(
   if (builtin) {
     return { id: parsed.value, desc: { ...builtin } };
   }
-  warnings?.push(
-    `unknown material '${parsed.value}' — falling back to default`
-  );
+  // Bare names are built-in keywords only (SVG paint). A document id needs url(#id).
+  if (library.has(parsed.value)) {
+    warnings?.push(
+      `material '${parsed.value}' is a document id — use url(#${parsed.value}); falling back to default`
+    );
+  } else {
+    warnings?.push(
+      `unknown material '${parsed.value}' — falling back to default`
+    );
+  }
   return { id: "default", desc: { ...BUILTIN_MATERIALS.default! } };
 }
 
@@ -162,7 +227,14 @@ export function resolveAppearance(
   library: MaterialLibrary,
   warnings?: string[]
 ): ResolvedAppearance {
-  const fill = parseRgba(styles?.fill, DEFAULT_FILL);
+  const fillRaw = styles?.fill;
+  const fillParsed = tryParseRgba(fillRaw);
+  if (fillRaw != null && fillParsed == null) {
+    warnings?.push(
+      `unparsed fill '${String(fillRaw)}' — falling back to default`
+    );
+  }
+  const fill = fillParsed ?? fallbackRgba(DEFAULT_FILL);
   const opacity = parseOpacity(styles?.opacity);
   const ref = materialRef(styles);
   const { id, desc } = resolveMaterialDesc(ref, library, warnings);
